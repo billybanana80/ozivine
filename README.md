@@ -79,8 +79,8 @@ Firefox: https://addons.mozilla.org/addon/export-cookies-txt
 Chrome: https://chrome.google.com/webstore/detail/gdocmgbfkjnnpapoeobnolbbkoibbcif
 
 Name it `{service_name}.txt` and place it in service folder eg: SEVEN.txt
-Modify the path to your cookies in the 7plus.py file
-eg: cookies = MozillaCookieJar("C:\\Downloads\\Ozivine\\cookies\\SEVEN.txt")
+
+Modify the path to your cookies in the config.yaml file
 
 ## Usage:
 
