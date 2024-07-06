@@ -308,4 +308,3 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
         season_episode_tag = f"S{season.zfill(2)}E{episode.zfill(2)}"
     
     get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path)
-
