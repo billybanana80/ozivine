@@ -6,7 +6,7 @@ import yaml
 #   Author: billybanana
 #   Quality: up to 1080p
 #   Key Features:
-#   1. Extract Video ID: Parses the ABC iView URL to extract the series name, season, and episode number.
+#   1. Extract Video ID: Parses the respective video URL to extract the movie or series name, season, and episode number.
 #   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
 #   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
 #   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
