@@ -46,7 +46,9 @@
       Sample config.yaml file to confirm format
 
       downloads_path: "C:/Downloads/"
+   
       wvd_device_path: "C:/Downloads/Ozivine/wvd/l3.wvd"
+   
       cookies_path: "C:/Downloads/Ozivine/cookies/SEVEN.txt"
 
 > [!TIP]
@@ -88,23 +90,33 @@ Navigate to the main url for the service you require
 
 ABC iView
 https://iview.abc.net.au
+
 7Plus
 https://7plus.com.au
+
 9Now
 https://www.9now.com.au
+
 SBS On Demand
 https://www.sbs.com.au/ondemand/
 
 Then navigate to the video url of the show/episode/movie required.
+
 Examples:
+
 https://iview.abc.net.au/video/LE2427H007S00
+
 https://7plus.com.au/below-deck-down-under?episode-id=4NBCU2330-S2T18
+
 https://www.9now.com.au/paramedics/season-5/episode-10
+
 https://www.sbs.com.au/ondemand/watch/2260044867809
 
 
 Note: it is not necessary to play any of these videos in the browser to obtain the page url.
+
 ABC iView, 9Now and SBS On Demand can be navigated without an account or login required.
+
 7Plus requires cookies to function, so a free account with the service is required. Register an account and login before exporting any cookies file.
 
 ```python
@@ -113,6 +125,7 @@ Commands:
 
 ```
  A download command is printed at the end of the script. You can choose Y or N to downlaod or not.
+ 
  You may choose to copy the N_m3u8DL-RE command and modify as you wish.
 
 > [!TIP]
