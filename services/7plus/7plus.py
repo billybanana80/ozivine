@@ -309,10 +309,4 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
     
     get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path)
 
-if __name__ == "__main__":
-    # Example usage for testing
-    url = "https://7plus.com.au/the-front-bar?episode-id=FBAR24-021"
-    downloads_path = "D:/Downloads/Ozivine/Downloads"
-    wvd_device_path = "D:/Downloads/CDM/wvd/ANDROID_4464_l3.wvd"
-    cookies_path = "D:/Downloads/CDM/cookies/SEVEN.txt"
-    main(url, downloads_path, wvd_device_path, cookies_path)
+
