@@ -8,6 +8,7 @@ import subprocess
 #   eg: https://www.sbs.com.au/ondemand/watch/2336216643518    or https://www.sbs.com.au/ondemand/tv-series/the-responder/season-2/the-responder-s2-ep2/2336216643518
 #   Authentication: None
 #   Geo-Locking: requires an Australian IP address
+#   Quality: up to 720p
 #   Key Features:
 #   1. Extract Video ID: Parses the SBS video URL to extract the video id and then fetches the show/movie info from the SBS API.
 #   2. Print Download Information: Outputs the M3U8 URL required for downloading the video content.

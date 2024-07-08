@@ -6,7 +6,7 @@ import yaml
 #   Author: billybanana
 #   Quality: up to 1080p
 #   Key Features:
-#   1. Extract Video ID: Parses the respective video URL to extract the movie or series name, season, and episode number.
+#   1. Extract Video ID: Parses the respective video URL to extract the series name, season, and episode number.
 #   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
 #   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
 #   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
@@ -30,6 +30,7 @@ def main():
     downloads_path = config.get('downloads_path')
     wvd_device_path = config.get('wvd_device_path')
     cookies_path = config.get('cookies_path')
+    credentials = config.get('credentials', {})
 
     video_url = input(f"{bcolors.ORANGE}Enter the video URL: {bcolors.ENDC}")
 
@@ -49,6 +50,10 @@ def main():
         service_module = "services.abciview.abc"
         print(f"{bcolors.ORANGE}Ozivine..........initiating ABC iView{bcolors.ENDC}")
         args = (video_url, downloads_path, wvd_device_path)
+    elif video_url.startswith("https://10play.com.au/"):
+        service_module = "services.10play.10play"
+        print(f"{bcolors.ORANGE}Ozivine..........initiating 10Play{bcolors.ENDC}")
+        args = (video_url, downloads_path, credentials.get("10play"))       
     else:
         print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, SBS, or ABC iView.{bcolors.ENDC}")
         sys.exit(1)

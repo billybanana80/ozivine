@@ -13,7 +13,8 @@
 - [x] Movies & TV-series
 - [x] Automatic PSSH, manifest, and key retreival 
 - [x] Option to add cookies where required (currently only 7Plus is required)
-- [x] [Supported sites] ABC iView, 7Plus, 9Now and SBS on Demand
+- [x] Option to add login credentials where required (currently only 10Play is required)
+- [x] [Supported sites] ABC iView, 7Plus, 9Now, 10Play and SBS on Demand
 
 ## Requirements:
 
@@ -41,6 +42,7 @@
 5. Install necessary packages: `pip install -r requirements.txt`
 6. Config: 
       -specify your Downloads path in the config.yaml (optional)
+
       -specify your path to *.wvd file in the config.yaml (mandatory)
 
       Sample config.yaml file to confirm format
@@ -50,6 +52,10 @@
       wvd_device_path: "C:/Downloads/Ozivine/wvd/l3.wvd"
    
       cookies_path: "C:/Downloads/Ozivine/cookies/SEVEN.txt"
+
+      credentials:
+        10play: username:password
+
 
 > [!TIP]
 > Clone the main branch to always stay up to date:
@@ -76,7 +82,8 @@ If a service requires cookies, you can use a browser extension to download cooki
 
 Firefox: https://addons.mozilla.org/addon/export-cookies-txt
 
-Chrome: https://chrome.google.com/webstore/detail/gdocmgbfkjnnpapoeobnolbbkoibbcif
+Chrome: https://chromewebstore.google.com/detail/open-cookiestxt/gdocmgbfkjnnpapoeobnolbbkoibbcif
+
 
 Name it `{service_name}.txt` and place it in service folder eg: SEVEN.txt
 
@@ -91,14 +98,22 @@ Navigate to the main url for the service you require
 ABC iView
 https://iview.abc.net.au
 
+
 7Plus
 https://7plus.com.au
+
 
 9Now
 https://www.9now.com.au
 
+
+10Play
+https://10play.com.au/
+
+
 SBS On Demand
 https://www.sbs.com.au/ondemand/
+
 
 Then navigate to the video url of the show/episode/movie required.
 
@@ -106,11 +121,18 @@ Examples:
 
 https://iview.abc.net.au/video/LE2427H007S00
 
+
 https://7plus.com.au/below-deck-down-under?episode-id=4NBCU2330-S2T18
+
 
 https://www.9now.com.au/paramedics/season-5/episode-10
 
+
 https://www.sbs.com.au/ondemand/watch/2260044867809
+
+
+https://10play.com.au/masterchef/episodes/season-16/episode-45/tpv240705dyovw
+
 
 
 Note: it is not necessary to play any of these videos in the browser to obtain the page url.
@@ -118,6 +140,8 @@ Note: it is not necessary to play any of these videos in the browser to obtain t
 ABC iView, 9Now and SBS On Demand can be navigated without an account or login required.
 
 7Plus requires cookies to function, so a free account with the service is required. Register an account and login before exporting any cookies file.
+
+10Play requires a login to function, so a free account with the service is required. Register an account and add your credentials to the config.yaml.
 
 ```python
 Commands:
