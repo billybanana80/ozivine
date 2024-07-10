@@ -6,9 +6,10 @@ from rich.padding import Padding
 from rich.text import Text
 from datetime import datetime
 
-#   Ozivine: Downloader for Australian FTA services
+#   Ozivine: Downloader for Australian & New Zealand FTA services
 #   Author: billybanana
 #   Quality: up to 1080p
+#   Geo: Australian or NZ IP address required service dependent
 #   Key Features:
 #   1. Extract Video ID: Parses the respective video URL to extract the series name, season, and episode number.
 #   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
@@ -17,7 +18,7 @@ from datetime import datetime
 #   5. Note: this script functions for both encrypted and non-encrypted video files.
 
 console = Console()
-__version__ = "1.1"  # Replace with the actual version
+__version__ = "1.2"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
@@ -84,9 +85,13 @@ def main():
     elif video_url.startswith("https://10play.com.au/"):
         service_module = "services.10play.10play"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 10Play{bcolors.ENDC}")
-        args = (video_url, downloads_path, credentials.get("10play"))       
+        args = (video_url, downloads_path, credentials.get("10play")) 
+    elif video_url.startswith("https://www.tvnz.co.nz/"):
+        service_module = "services.tvnz.tvnz"
+        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating TVNZ{bcolors.ENDC}")
+        args = (video_url, downloads_path, credentials.get("tvnz"), config)               
     else:
-        print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, or ABC iView.{bcolors.ENDC}")
+        print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, ABC iView or TVNZ.{bcolors.ENDC}")
         sys.exit(1)
 
     try:

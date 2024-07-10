@@ -1,5 +1,5 @@
 <h3 align="center">Ozivine<br/>
-<sup>A Download Utility for Free Australian Streaming Services</sup></h3>
+<sup>A Download Utility for Free Australian & NZ Streaming Services</sup></h3>
 <p align="center">
     <a href="https://python.org">
         <img src="https://img.shields.io/badge/python-3.9+-blue" alt="Python version">
@@ -13,8 +13,8 @@
 - [x] Movies & TV-series
 - [x] Automatic PSSH, manifest, and key retreival 
 - [x] Option to add cookies where required (currently only 7Plus is required)
-- [x] Option to add login credentials where required (currently only 10Play is required)
-- [x] [Supported sites] ABC iView, 7Plus, 9Now, 10Play and SBS on Demand
+- [x] Option to add login credentials where required (currently only 10Play and TVNZ is required)
+- [x] [Supported sites] ABC iView, 7Plus, 9Now, 10Play, SBS on Demand and TVNZ.
 
 ## Requirements:
 
@@ -55,6 +55,7 @@
 
       credentials:
         10play: username:password
+        tvnz: username:password
 
 
 > [!TIP]
@@ -91,7 +92,7 @@ Modify the path to your cookies in the config.yaml file
 
 ## Usage:
 
-Note: Australian IP address is required. Use a VPN or proxy as required.
+Note: Australian or NZ IP address is required service dependent. Use a VPN or proxy as required.
 
 Navigate to the main url for the service you require
 
@@ -115,6 +116,11 @@ SBS On Demand
 https://www.sbs.com.au/ondemand/
 
 
+TVNZ
+https://www.tvnz.co.nz/
+
+
+
 Then navigate to the video url of the show/episode/movie required.
 
 Examples:
@@ -134,6 +140,9 @@ https://www.sbs.com.au/ondemand/watch/2260044867809
 https://10play.com.au/masterchef/episodes/season-16/episode-45/tpv240705dyovw
 
 
+https://www.tvnz.co.nz/shows/the-responder/episodes/s1-e6
+
+
 
 Note: it is not necessary to play any of these videos in the browser to obtain the page url.
 
@@ -141,7 +150,7 @@ ABC iView, 9Now and SBS On Demand can be navigated without an account or login r
 
 7Plus requires cookies to function, so a free account with the service is required. Register an account and login before exporting any cookies file.
 
-10Play requires a login to function, so a free account with the service is required. Register an account and add your credentials to the config.yaml.
+10Play and TVNZ requires a login to function, so a free account with the service is required. Register an account and add your credentials to the config.yaml.
 
 ```python
 Commands:
