@@ -86,7 +86,7 @@ def main():
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 10Play{bcolors.ENDC}")
         args = (video_url, downloads_path, credentials.get("10play"))       
     else:
-        print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, SBS, or ABC iView.{bcolors.ENDC}")
+        print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, or ABC iView.{bcolors.ENDC}")
         sys.exit(1)
 
     try:
