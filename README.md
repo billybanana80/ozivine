@@ -14,7 +14,7 @@
 - [x] Automatic PSSH, manifest, and key retreival 
 - [x] Option to add cookies where required (currently only 7Plus is required)
 - [x] Option to add login credentials where required (currently only 10Play and TVNZ is required)
-- [x] [Supported sites] ABC iView, 7Plus, 9Now, 10Play, SBS on Demand and TVNZ.
+- [x] [Supported sites] ABC iView, 7Plus, 9Now, 10Play, SBS on Demand, ThreeNow and TVNZ.
 
 ## Requirements:
 
@@ -51,7 +51,7 @@
    
       wvd_device_path: "C:/Downloads/Ozivine/wvd/l3.wvd"
    
-      cookies_path: "C:/Downloads/Ozivine/cookies/SEVEN.txt"
+      cookies_path: "C:/Downloads/Ozivine/cookies/cookies.txt"
 
       credentials:
         10play: username:password
@@ -116,6 +116,10 @@ SBS On Demand
 https://www.sbs.com.au/ondemand/
 
 
+ThreeNow
+https://www.threenow.co.nz
+
+
 TVNZ
 https://www.tvnz.co.nz/
 
@@ -140,6 +144,9 @@ https://www.sbs.com.au/ondemand/watch/2260044867809
 https://10play.com.au/masterchef/episodes/season-16/episode-45/tpv240705dyovw
 
 
+https://www.threenow.co.nz/shows/thirst-with-shay-mitchell/season-1-ep-1/1718148621037/M86965-766
+
+
 https://www.tvnz.co.nz/shows/the-responder/episodes/s1-e6
 
 
@@ -151,6 +158,8 @@ ABC iView, 9Now and SBS On Demand can be navigated without an account or login r
 7Plus requires cookies to function, so a free account with the service is required. Register an account and login before exporting any cookies file.
 
 10Play and TVNZ requires a login to function, so a free account with the service is required. Register an account and add your credentials to the config.yaml.
+
+ThreeNow requires a login to navigate the site, so a free account with the service is required.
 
 ```python
 Commands:

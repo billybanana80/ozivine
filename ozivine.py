@@ -18,7 +18,7 @@ from datetime import datetime
 #   5. Note: this script functions for both encrypted and non-encrypted video files.
 
 console = Console()
-__version__ = "1.2"  # Replace with the actual version
+__version__ = "1.3"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
@@ -89,9 +89,13 @@ def main():
     elif video_url.startswith("https://www.tvnz.co.nz/"):
         service_module = "services.tvnz.tvnz"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating TVNZ{bcolors.ENDC}")
-        args = (video_url, downloads_path, credentials.get("tvnz"), config)               
+        args = (video_url, downloads_path, credentials.get("tvnz"), config)  
+    elif video_url.startswith("https://www.threenow.co.nz"):
+        service_module = "services.threenow.threenow"
+        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ThreeNow{bcolors.ENDC}")
+        args = (video_url, downloads_path, wvd_device_path)                      
     else:
-        print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, ABC iView or TVNZ.{bcolors.ENDC}")
+        print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, ABC iView, ThreeNow or TVNZ.{bcolors.ENDC}")
         sys.exit(1)
 
     try:

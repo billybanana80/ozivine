@@ -2,3 +2,4 @@ requests
 pywidevine
 lxml
 pyyaml
+rich
