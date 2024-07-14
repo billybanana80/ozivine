@@ -304,7 +304,7 @@ class TVNZAPI:
         else:
             raise ValueError("Secondary token not found in response")
 
-def handle_mediakind_sport_video(api, video_url):
+def handle_mediakind_sport_video(api, video_url, downloads_path):
     # print("Entered handle_mediakind_sport_video function") # debugging only
     match = re.search(r'sport/([^/]+)/([^/]+)/([^/]+)', video_url)
     if match:
@@ -357,7 +357,7 @@ def handle_mediakind_sport_video(api, video_url):
                     print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
                 resolution = api.get_highest_resolution_mediakind(mpd_url)
                 formatted_file_name = f"{subcategory}.{video_slug}".replace("-", ".").title() + f".{resolution}.TVNZ.WEB-DL.AAC2.0.H.264"
-                download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-name "{formatted_file_name}" --key """ + ' --key '.join(keys)
+                download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(keys)
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(download_command)
 
@@ -371,14 +371,14 @@ def handle_mediakind_sport_video(api, video_url):
     else:
         print(f"{bcolors.FAIL}Regex match failed for the URL: {video_url}{bcolors.ENDC}")
 
-def get_download_command(video_url, config):
+def get_download_command(video_url, downloads_path, config):
     api = TVNZAPI(config)
     credentials = config['credentials']['tvnz'].split(":")
     email, password = credentials[0], credentials[1]
     api.login(email, password)
     video_id = api.get_video_id_from_url(video_url)
     if video_id and isinstance(video_id, str) and video_id.startswith("mediakind:"):
-        handle_mediakind_sport_video(api, video_url)
+        handle_mediakind_sport_video(api, video_url, downloads_path)
         return
     else:
         video_id = video_id.split(":")[-1] if isinstance(video_id, str) else video_id
@@ -420,7 +420,7 @@ def get_download_command(video_url, config):
                 print(f"{bcolors.LIGHTBLUE}PSSH: {bcolors.ENDC}{pssh}")
                 for key in keys:
                     print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
-                download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-name "{formatted_file_name}" --key """ + ' --key '.join(keys)
+                download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(keys)
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(download_command)            
             else:
@@ -436,6 +436,6 @@ def get_download_command(video_url, config):
             subprocess.run(download_command, shell=True)
 
 def main(video_url, downloads_path, credentials, config):
-    get_download_command(video_url, config)
+    get_download_command(video_url, downloads_path, config)
 
 
