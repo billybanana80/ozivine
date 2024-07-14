@@ -89,7 +89,7 @@ def main():
     elif video_url.startswith("https://www.tvnz.co.nz/"):
         service_module = "services.tvnz.tvnz"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating TVNZ{bcolors.ENDC}")
-        args = (video_url, downloads_path, credentials.get("tvnz"), config)  
+        args = (video_url, downloads_path, wvd_device_path, credentials.get("tvnz"))  
     elif video_url.startswith("https://www.threenow.co.nz"):
         service_module = "services.threenow.threenow"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ThreeNow{bcolors.ENDC}")

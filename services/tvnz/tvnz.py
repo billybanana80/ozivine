@@ -12,24 +12,9 @@ import subprocess
 import os
 from time import time
 
-#   Ozivine: TVNZ Video Downloader
-#   Author: billybanana
-#   Usage: enter the movie/series/season/episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
-#   eg: TV Shows https://www.tvnz.co.nz/shows/boiling-point/episodes/s1-e1 or Movies https://www.tvnz.co.nz/shows/legally-blonde/movie/s1-e1 or Sport https://www.tvnz.co.nz/sport/football/uefa-euro/spain-v-france-semi-finals-highlights
-#   Authentication: Login
-#   Geo-Locking: requires a New Zealand IP address
-#   Quality: up to 1080p
-#   Key Features:
-#   1. Extract Video ID: Parses the TVNZ URL to extract the series name, season, and episode number, and then fetches the Brightcove or MediaKind video ID from the TVNZ API.
-#   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
-#   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
-#   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
-#   5. Note: this script functions for both encrypted and non-encrypted video files (majority of TVZN content is encrypted).
-
 # Load configuration from config.yaml
-def load_config(config_path):
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
 
 BRIGHTCOVE_KEY = 'BCpkADawqM0IurzupiJKMb49WkxM__ngDMJ3GOQBhN2ri2Ci_lHwDWIpf4sLFc8bANMc-AVGfGR8GJNgxGqXsbjP1gHsK2Fpkoj6BSpwjrKBnv1D5l5iGPvVYCo'
 BRIGHTCOVE_ACCOUNT = '963482467001'
@@ -61,11 +46,10 @@ class bcolors:
     ORANGE = '\033[38;5;208m'
 
 class TVNZAPI:
-    def __init__(self, config):
+    def __init__(self):
         self.session = requests.Session()
         self.token = None
         self.token_expires = 0
-        self.config = config
 
     def _refresh_token(self):
         self.token = None
@@ -135,30 +119,28 @@ class TVNZAPI:
         if time() > self.token_expires:
             self._refresh_token()
             
-        match = re.search(r'sport/([^/]+)/([^/]+)/([^/]+)', video_url)
-        if match:
-            category, subcategory, video_slug = match.groups()
-            api_url = f"https://apis-public-prod.tech.tvnz.co.nz/api/v1/web/play/page/sport/{category}/{subcategory}/{video_slug}"
+        if "sport" in video_url:
+            match = re.search(r'sport/([^/]+)/([^/]+)/([^/]+)', video_url)
+            if match:
+                category, subcategory, video_slug = match.groups()
+                api_url = f"https://apis-public-prod.tech.tvnz.co.nz/api/v1/web/play/page/sport/{category}/{subcategory}/{video_slug}"
+                response = self.session.get(api_url)
+                response.raise_for_status()
+                data = response.json()
+                return self.find_video_id_in_sport(data)
         else:
             match = re.search(r'shows/([^/]+)/(episodes|movie)/s(\d+)-e(\d+)', video_url)
             if not match:
                 raise ValueError("Could not extract video information from the URL.")
             series_name, content_type, season, episode = match.groups()
             api_url = f"https://apis-public-prod.tech.tvnz.co.nz/api/v1/web/play/page/shows/{series_name}/{content_type}/s{season}-e{episode}"
-        
-        response = self.session.get(api_url)
-        response.raise_for_status()
-        data = response.json()
-        
-        if "sport" in video_url:
-            video_id = self.find_video_id_in_sport(data)
-        else:
-            video_id = self.find_video_id_in_show(data, season, episode)
-        
-        if video_id:
-            return video_id
-        else:
-            raise ValueError("Could not find the video ID in the API response.")
+            
+            if "movie" in video_url:
+                return self.find_video_id_in_movie(api_url, series_name, season, episode)
+            else:
+                return self.find_video_id_in_show(api_url, series_name, season, episode)
+
+        return None
 
     def find_video_id_in_sport(self, data):
         if isinstance(data, dict):
@@ -177,23 +159,32 @@ class TVNZAPI:
                     return result
         return None
 
-    def find_video_id_in_show(self, data, season, episode):
-        def find_video_id(data, season, episode):
-            if isinstance(data, dict):
-                if data.get("seasonNumber") == season and data.get("episodeNumber") == episode:
-                    return data.get("publisherMetadata", {}).get("brightcoveVideoId")
-                for key, value in data.items():
-                    result = find_video_id(value, season, episode)
+    def find_video_id_in_show(self, api_url, series_name, season, episode):
+        response = self.session.get(api_url)
+        response.raise_for_status()
+        data = response.json()
+        url = f"/shows/{series_name}/episodes/s{season}-e{episode}"
+        href = f"/api/v1/web/play/page/shows/{series_name}/episodes/s{season}-e{episode}"
+        return self.find_brightcove_video_id(data, url, href)
+    
+    def find_video_id_in_movie(self, api_url, series_name, season, episode):
+        response = self.session.get(api_url)
+        response.raise_for_status()
+        data = response.json()
+        url = f"/shows/{series_name}/movie/s{season}-e{episode}"
+        href = f"/api/v1/web/play/page/shows/{series_name}/movie/s{season}-e{episode}"
+        return self.find_brightcove_video_id(data, url, href)
+
+    def find_brightcove_video_id(self, data, url, href):
+        for key, value in data.items():
+            if isinstance(value, dict):
+                if value.get("page", {}).get("url") == url and value.get("page", {}).get("href") == href:
+                    return value.get("publisherMetadata", {}).get("brightcoveVideoId")
+                else:
+                    result = self.find_brightcove_video_id(value, url, href)
                     if result:
                         return result
-            elif isinstance(data, list):
-                for item in data:
-                    result = find_video_id(item, season, episode)
-                    if result:
-                        return result
-            return None
-        
-        return find_video_id(data, season, episode)
+        return None
 
     def get_pssh(self, url_mpd):
         response = self.session.get(url_mpd)
@@ -218,7 +209,7 @@ class TVNZAPI:
             print(f"Could not decode PSSH data as Base64: {e}")
             return []
 
-        device = Device.load(self.config['wvd_device_path'])
+        device = Device.load(config['wvd_device_path'])
         cdm = Cdm.from_device(device)
         session_id = cdm.open()
         challenge = cdm.get_license_challenge(session_id, pssh)
@@ -289,7 +280,7 @@ class TVNZAPI:
     def get_secondary_authorization_token(self, video_id):
         token_url = f"https://apis-public-prod.tvnz.io/playback/v1/{video_id}"
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f'Bearer {self.token}',
             "Accept": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
@@ -305,13 +296,10 @@ class TVNZAPI:
             raise ValueError("Secondary token not found in response")
 
 def handle_mediakind_sport_video(api, video_url, downloads_path):
-    # print("Entered handle_mediakind_sport_video function") # debugging only
     match = re.search(r'sport/([^/]+)/([^/]+)/([^/]+)', video_url)
     if match:
-        # print("Regex match successful") # debugging only
         category, subcategory, video_slug = match.groups()
         api_url = f"https://apis-public-prod.tech.tvnz.co.nz/api/v1/web/play/page/sport/{category}/{subcategory}/{video_slug}"
-        # print(f"Constructed API URL: {api_url}") # debugging only
 
         response = api.session.get(api_url)
         response.raise_for_status()
@@ -334,21 +322,16 @@ def handle_mediakind_sport_video(api, video_url, downloads_path):
 
         video_id = find_mediakind_id(data)
         if video_id:
-            # print(f"Found Mediakind video ID: {video_id}") # debugging only
             mpd_url = f"https://replay.vod-tvnz-prod.tvnz.io/dash-enc/{video_id}/manifest.mpd"
-            # print(f"Manifest URL: {mpd_url}") # debugging only
             pssh = api.get_pssh(mpd_url)
-            # print(f"PSSH: {pssh}") # debugging only
             
             # Fetch secondary token
             secondary_token = api.get_secondary_authorization_token(video_id)
-            # print(f"Secondary Authorization token: {secondary_token}") # debugging only
 
             lic_url = "https://apis-public-prod.tvnz.io/license/v1/wv"
 
             if pssh:
                 keys = api.get_keys(pssh, lic_url, secondary_token)
-                # print(f"Keys: {keys}") # debugging only
                 # Print the requested information
                 print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{mpd_url}")
                 print(f"{bcolors.RED}License URL: {bcolors.ENDC}{lic_url}")
@@ -371,10 +354,9 @@ def handle_mediakind_sport_video(api, video_url, downloads_path):
     else:
         print(f"{bcolors.FAIL}Regex match failed for the URL: {video_url}{bcolors.ENDC}")
 
-def get_download_command(video_url, downloads_path, config):
-    api = TVNZAPI(config)
-    credentials = config['credentials']['tvnz'].split(":")
-    email, password = credentials[0], credentials[1]
+def get_download_command(video_url, downloads_path, wvd_device_path, credentials):
+    api = TVNZAPI()
+    email, password = credentials.split(":")
     api.login(email, password)
     video_id = api.get_video_id_from_url(video_url)
     if video_id and isinstance(video_id, str) and video_id.startswith("mediakind:"):
@@ -435,7 +417,5 @@ def get_download_command(video_url, downloads_path, config):
         if user_input == 'y':
             subprocess.run(download_command, shell=True)
 
-def main(video_url, downloads_path, credentials, config):
-    get_download_command(video_url, downloads_path, config)
-
-
+def main(video_url, downloads_path, wvd_device_path, credentials):
+    get_download_command(video_url, downloads_path, wvd_device_path, credentials)
