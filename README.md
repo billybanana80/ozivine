@@ -36,7 +36,7 @@
 ## Installation:
 
 1. Install Python (check 'Add to PATH' if on Windows)
-2. Clone main branch or download latest version from [Releases](https://github.com/billybanana/ozivine/releases)
+2. Clone main branch or download latest version from [Releases](https://github.com/billybanana80/ozivine/releases)
 3. Place required tools inside Ozivine folder OR add them to system PATH (recommended)
 4. Create `/wvd/` folder and place .wvd file in folder (or specify the path to your existing *.wvd as below)
 5. Install necessary packages: `pip install -r requirements.txt`
@@ -61,7 +61,7 @@
 > [!TIP]
 > Clone the main branch to always stay up to date:
 >
-> ```git clone https://github.com/billybanana/ozivine.git ozivine```
+> ```git clone https://github.com/billybanana80/ozivine.git ozivine```
 
 ## Common issues:
 
