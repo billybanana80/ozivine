@@ -12,6 +12,20 @@ import subprocess
 import os
 from time import time
 
+#   Ozivine: TVNZ Video Downloader
+#   Author: billybanana
+#   Usage: enter the movie/series/season/episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
+#   eg: TV Shows https://www.tvnz.co.nz/shows/boiling-point/episodes/s1-e1 or Movies https://www.tvnz.co.nz/shows/legally-blonde/movie/s1-e1 or Sport https://www.tvnz.co.nz/sport/football/uefa-euro/spain-v-france-semi-finals-highlights
+#   Authentication: Login
+#   Geo-Locking: requires a New Zealand IP address
+#   Quality: up to 1080p
+#   Key Features:
+#   1. Extract Video ID: Parses the TVNZ URL to extract the series name, season, and episode number, and then fetches the Brightcove or MediaKind video ID from the TVNZ API.
+#   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
+#   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
+#   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
+#   5. Note: this script functions for both encrypted and non-encrypted video files (majority of TVZN content is encrypted).
+
 # Load configuration from config.yaml
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)

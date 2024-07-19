@@ -61,34 +61,43 @@ def get_video_info(video_url):
         raise ValueError("Could not extract show_id and videoId from the URL.\n Enter the full video URL please:\n eg: https://www.threenow.co.nz/shows/thirst-with-shay-mitchell/season-1-ep-1/1718148621037/M86965-766")
     
     show_id, video_id = match.groups()
+
+    # Print the extracted show_id and video_id for debugging
+    # print(f"Extracted show_id: {show_id}")
+    # print(f"Extracted video_id: {video_id}")
     
     api_url = f"https://now-api.fullscreen.nz/v5/shows/{show_id}"
+    
+    # Print the api_url for debugging
+    # print(f"API URL: {api_url}")
     
     response = requests.get(api_url)
     response.raise_for_status()
     data = response.json()
     
-    # Check if genres indicate a movie or current affairs
-    if "movie" in data.get("genres", []) or "current-affairs" in data.get("genres", []):
+    # Check if genres indicate a movie or current affairs or comedy
+    if "movie" in data.get("genres", []) or "current-affairs" in data.get("genres", []) or "comedy" in data.get("genres", []):
         # Use easyWatch section if it exists
-        if "easyWatch" in data and "externalMediaId" in data["easyWatch"] and data["easyWatch"]["videoId"] == video_id:
-            return data["easyWatch"]
+        if "easyWatch" in data and "externalMediaId" in data["easyWatch"]:
+            if data["easyWatch"]["videoId"] == video_id:
+                return data["easyWatch"]
         # Otherwise, use the episodes section
         for episode in data.get("episodes", []):
-            if episode.get("videoId") == video_id:
+            if episode.get("videoId") == video_id or episode.get("externalMediaId") == video_id:
                 return episode
-        # Additionally, check within seasons for current affairs
+        # Additionally, check within seasons for current affairs or comedy
         for season in data.get("seasons", []):
             for episode in season.get("episodes", []):
-                if episode.get("videoId") == video_id:
+                if episode.get("videoId") == video_id or episode.get("externalMediaId") == video_id:
                     return episode
     else:
         for season in data.get("seasons", []):
             for episode in season.get("episodes", []):
-                if episode.get("videoId") == video_id:
+                if episode.get("videoId") == video_id or episode.get("externalMediaId") == video_id:
                     return episode
     
     raise ValueError("Could not find the video ID in the API response.")
+
 
 # Get additional video information for filename formatting
 def get_additional_video_info(show_id, video_id):
@@ -100,9 +109,11 @@ def get_additional_video_info(show_id, video_id):
 # Get the video information from the Brightcove API
 def get_playback_info(bc_video_id):
     url = f"https://edge.api.brightcove.com/playback/v1/accounts/{BRIGHTCOVE_ACCOUNT}/videos/{bc_video_id}"
+    # print(f"Brightcove video ID (bc_video_id): {bc_video_id}")  # Print the bc_video_id for debugging
     response = requests.get(url, headers=BRIGHTCOVE_HEADERS)
     response.raise_for_status()
     return response.json()
+
 
 # Get the manifest MPD 
 def get_mpd_url(playback_info):
