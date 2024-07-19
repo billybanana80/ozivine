@@ -98,7 +98,6 @@ def get_video_info(video_url):
     
     raise ValueError("Could not find the video ID in the API response.")
 
-
 # Get additional video information for filename formatting
 def get_additional_video_info(show_id, video_id):
     api_url = f"https://now-api.fullscreen.nz/v5/shows/{show_id}/{video_id}"
@@ -114,29 +113,52 @@ def get_playback_info(bc_video_id):
     response.raise_for_status()
     return response.json()
 
+# Get the manifest URL (MPD or M3U8)
+def get_manifest_url(playback_info):
+    dash_source = None
+    hls_source = None
 
-# Get the manifest MPD 
-def get_mpd_url(playback_info):
     for source in playback_info['sources']:
         if source.get('type') == 'application/dash+xml' and 'playready' not in source['src']:
-            return source['src'], source['key_systems']['com.widevine.alpha']['license_url']
-    raise Exception("MPD URL not found in playback info")
+            dash_source = (source['src'], source['key_systems']['com.widevine.alpha']['license_url'] if 'key_systems' in source and 'com.widevine.alpha' in source['key_systems'] else None)
+        elif source.get('type') == 'application/x-mpegURL':
+            hls_source = (source['src'], None)
+    
+    if dash_source:
+        return dash_source
+    elif hls_source:
+        return hls_source
+    else:
+        raise Exception("Manifest URL not found in playback info")
 
 # Extract the PSSH and Licence from the MPD
 def get_pssh_and_license(url_mpd):
     response = requests.get(url_mpd)
     response.raise_for_status()
-    root = ET.fromstring(response.content)
+    content = response.content
+    if not content:
+        raise ValueError("MPD content is empty or invalid")
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as e:
+        print(f"XML parsing error: {e}")
+        print(f"MPD content: {content}")
+        raise
 
-    # Extract the correct ContentProtection element
+    pssh_elem = None
+    license_url = None
+
     for elem in root.findall(".//{urn:mpeg:dash:schema:mpd:2011}ContentProtection"):
         if elem.attrib.get('schemeIdUri') == "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed":
-            pssh = elem.find("{urn:mpeg:cenc:2013}pssh")
-            if pssh is not None:
-                license_url = elem.attrib['{urn:brightcove:2015}licenseAcquisitionUrl']
-                return pssh.text.strip(), license_url
+            pssh_elem = elem.find("{urn:mpeg:cenc:2013}pssh")
+            if pssh_elem is not None:
+                license_url = elem.attrib.get('{urn:brightcove:2015}licenseAcquisitionUrl')
+                break
 
-    raise ValueError("Could not find the correct ContentProtection element in the MPD content.")
+    if pssh_elem is not None and license_url is not None:
+        return pssh_elem.text.strip(), license_url
+    else:
+        raise ValueError("Could not find the correct ContentProtection element in the MPD content.")
 
 # Licence challenge to obtain the decryption keys
 def get_keys(pssh, lic_url, wvd_device_path):
@@ -173,7 +195,15 @@ def get_keys(pssh, lic_url, wvd_device_path):
 def get_best_video_height(url_mpd):
     response = requests.get(url_mpd)
     response.raise_for_status()
-    root = ET.fromstring(response.content)
+    content = response.content
+    if not content:
+        raise ValueError("MPD content is empty or invalid")
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as e:
+        print(f"XML parsing error: {e}")
+        print(f"MPD content: {content}")
+        raise
     
     heights = []
     for adaptation_set in root.findall(".//{urn:mpeg:dash:schema:mpd:2011}AdaptationSet"):
@@ -188,7 +218,7 @@ def get_best_video_height(url_mpd):
             return "720p"
         else:
             return "SD"
-    return "720p"  # Default to 720p if no height found
+    return "720p"
 
 # Format the filename based on the type of content
 def get_formatted_filename(show_id, video_id, best_height):
@@ -214,33 +244,63 @@ def get_formatted_filename(show_id, video_id, best_height):
 
 # Print all the required information and download command
 def get_download_command(video_url, downloads_path, wvd_device_path):
-    video_info = get_video_info(video_url)
-    show_id = video_info['showId']
-    video_id = video_info['videoId']
-    
-    playback_info = get_playback_info(video_info['externalMediaId'])
-    mpd_url, lic_url = get_mpd_url(playback_info)
-    pssh, lic_url = get_pssh_and_license(mpd_url)
-    
-    best_height = get_best_video_height(mpd_url)
-    
-    formatted_filename = get_formatted_filename(show_id, video_id, best_height)
-    
-    print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{mpd_url}")
-    print(f"{bcolors.RED}License URL: {bcolors.ENDC}{lic_url}")
-    print(f"{bcolors.LIGHTBLUE}PSSH: {bcolors.ENDC}{pssh}")
-    
-    keys = get_keys(pssh, lic_url, wvd_device_path)
-    for key in keys:
-        print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
-    
-    download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}" --key """ + ' --key '.join(keys)
-    print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-    print(download_command)
+    try:
+        video_info = get_video_info(video_url)
+        show_id = video_info['showId']
+        video_id = video_info['videoId']
+        
+        playback_info = get_playback_info(video_info['externalMediaId'])
+        manifest_url, lic_url = get_manifest_url(playback_info)
+        
+        if manifest_url.endswith("master.m3u8"):
+            # Handling HLS playlist
+            formatted_filename = get_formatted_filename(show_id, video_id, "720p")
+            download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}" """
+            print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
+            print(download_command)
 
-    user_input = input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == 'y':
-        subprocess.run(download_command, shell=True)
+            user_input = input("Do you wish to download? Y or N: ").strip().lower()
+            if user_input == 'y':
+                subprocess.run(download_command, shell=True)
+        else:
+            # Handling DASH manifest
+            try:
+                pssh, lic_url = get_pssh_and_license(manifest_url)
+                best_height = get_best_video_height(manifest_url)
+                formatted_filename = get_formatted_filename(show_id, video_id, best_height)
+                
+                print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{manifest_url}")
+                print(f"{bcolors.RED}License URL: {bcolors.ENDC}{lic_url}")
+                print(f"{bcolors.LIGHTBLUE}PSSH: {bcolors.ENDC}{pssh}")
+                
+                keys = get_keys(pssh, lic_url, wvd_device_path)
+                for key in keys:
+                    print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
+                
+                download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}" --key """ + ' --key '.join(keys)
+                print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
+                print(download_command)
+
+                user_input = input("Do you wish to download? Y or N: ").strip().lower()
+                if user_input == 'y':
+                    subprocess.run(download_command, shell=True)
+            except ValueError as e:
+                # Fallback to HLS if DASH content is not encrypted
+                for source in playback_info['sources']:
+                    if source.get('type') == 'application/x-mpegURL':
+                        manifest_url = source['src']
+                        break
+                formatted_filename = get_formatted_filename(show_id, video_id, "720p")
+                download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}" """
+                print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
+                print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
+                print(download_command)
+
+                user_input = input("Do you wish to download? Y or N: ").strip().lower()
+                if user_input == 'y':
+                    subprocess.run(download_command, shell=True)
+    except Exception as e:
+        print(f"Error: {e}")
 
 def main(video_url, downloads_path, wvd_device_path):
     get_download_command(video_url, downloads_path, wvd_device_path)
