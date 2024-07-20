@@ -18,7 +18,7 @@ from datetime import datetime
 #   5. Note: this script functions for both encrypted and non-encrypted video files.
 
 console = Console()
-__version__ = "1.3"  # Replace with the actual version
+__version__ = "1.4"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
