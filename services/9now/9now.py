@@ -15,7 +15,7 @@ import binascii
 #   eg: https://www.9now.com.au/paramedics/season-5/episode-10
 #   Authentication: None
 #   Geo-Locking: requires an Australian IP address
-#   Quality: up to 720p
+#   Quality: up to 1080p
 #   Key Features:
 #   1. Extract Video ID: Parses the 9Now URL to extract the series name, season, and episode number, and then fetches the Brightcove video ID from the 9Now API.
 #   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
@@ -104,6 +104,17 @@ def get_pssh(url_mpd):
                 print(f"Invalid PSSH data: {e}")
     return None
 
+# Function to get maximum video height from MPD URL
+def get_max_height(url_mpd):
+    response = requests.get(url_mpd)
+    root = ET.fromstring(response.content)
+    max_height = 0
+    for rep in root.findall(".//{urn:mpeg:dash:schema:mpd:2011}Representation"):
+        height = rep.get('height')
+        if height is not None:
+            max_height = max(max_height, int(height))
+    return max_height
+
 # Function to get keys using PSSH and license URL
 def get_keys(pssh, lic_url, wvd_device_path):
     try:
@@ -150,7 +161,6 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
     response = session.get(BRIGHTCOVE_API(video_id), headers=BRIGHTCOVE_HEADERS).json()
     
     download_command = None
-    formatted_file_name = f"{series_name.title().replace('-', '.').replace(' ', '.').replace('_', '.').replace('/', '.').replace(':', '.')}.{season}{episode}.720p.9NOW.WEB-DL.AAC2.0.H.264"
     
     if 'sources' in response:
         sources = response['sources']
@@ -159,6 +169,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
             mpd_url = source['src']
             lic_url = source['key_systems']['com.widevine.alpha']['license_url']
             pssh = get_pssh(mpd_url)
+            max_height = get_max_height(mpd_url)
             if pssh:
                 keys = get_keys(pssh, lic_url, wvd_device_path)
                 # Print the requested information
@@ -168,6 +179,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
                 for key in keys:
                     print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
+                formatted_file_name = f"{series_name.title().replace('-', '.').replace(' ', '.').replace('_', '.').replace('/', '.').replace(':', '.')}.{season}{episode}.{max_height}p.9NOW.WEB-DL.AAC2.0.H.264"
                 download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(keys)
                 print(download_command)
         else:
@@ -175,9 +187,11 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
             unencrypted_source = next((src for src in sources if 'src' in src and 'master.m3u8' in src['src']), None)
             if unencrypted_source:
                 m3u8_url = unencrypted_source['src']
+                max_height = get_max_height(m3u8_url)
                 # Print the download command for unencrypted videos
                 print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{m3u8_url}")
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
+                formatted_file_name = f"{series_name.title().replace('-', '.').replace(' ', '.').replace('_', '.').replace('/', '.').replace(':', '.')}.{season}{episode}.{max_height}p.9NOW.WEB-DL.AAC2.0.H.264"
                 download_command = f"""N_m3u8DL-RE "{m3u8_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
                 print(download_command)
             else:
