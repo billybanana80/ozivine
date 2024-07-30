@@ -9,7 +9,7 @@ from pywidevine.pssh import PSSH
 import base64
 import binascii
 
-#   Ozivine: 9Now Video Downloader
+#   9Now Video Downloader
 #   Author: billybanana
 #   Usage: enter the series/season/episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
 #   eg: https://www.9now.com.au/paramedics/season-5/episode-10
@@ -89,31 +89,57 @@ def get_video_id_from_url(video_url):
 
 # Function to get PSSH from MPD URL
 def get_pssh(url_mpd):
-    response = requests.get(url_mpd)
-    root = ET.fromstring(response.content)
-    pssh_elements = root.findall(".//{urn:mpeg:dash:schema:mpd:2011}ContentProtection")
+    try:
+        response = requests.get(url_mpd)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        pssh_elements = root.findall(".//{urn:mpeg:dash:schema:mpd:2011}ContentProtection")
 
-    for elem in pssh_elements:
-        pssh = elem.find("{urn:mpeg:cenc:2013}pssh")
-        if pssh is not None and pssh.text:
-            pssh_data = pssh.text.strip()
-            try:
-                base64.b64decode(pssh_data)  # Validate Base64
-                return pssh_data
-            except binascii.Error as e:
-                print(f"Invalid PSSH data: {e}")
+        for elem in pssh_elements:
+            pssh = elem.find("{urn:mpeg:cenc:2013}pssh")
+            if pssh is not None and pssh.text:
+                pssh_data = pssh.text.strip()
+                try:
+                    base64.b64decode(pssh_data)  # Validate Base64
+                    return pssh_data
+                except binascii.Error as e:
+                    print(f"Invalid PSSH data: {e}")
+    except Exception as e:
+        print(f"Error fetching PSSH: {e}")
     return None
 
 # Function to get maximum video height from MPD URL
-def get_max_height(url_mpd):
-    response = requests.get(url_mpd)
-    root = ET.fromstring(response.content)
-    max_height = 0
-    for rep in root.findall(".//{urn:mpeg:dash:schema:mpd:2011}Representation"):
-        height = rep.get('height')
-        if height is not None:
-            max_height = max(max_height, int(height))
-    return max_height
+def get_max_height_mpd(url_mpd):
+    try:
+        response = requests.get(url_mpd)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        max_height = 0
+        for rep in root.findall(".//{urn:mpeg:dash:schema:mpd:2011}Representation"):
+            height = rep.get('height')
+            if height is not None:
+                max_height = max(max_height, int(height))
+        return max_height
+    except Exception as e:
+        print(f"Error fetching max height from MPD: {e}")
+    return 0
+
+# Function to get maximum video height from m3u8 URL
+def get_max_height_m3u8(url_m3u8):
+    try:
+        response = requests.get(url_m3u8)
+        response.raise_for_status()
+        max_height = 0
+        for line in response.text.splitlines():
+            if "RESOLUTION" in line:
+                resolution = re.search(r"RESOLUTION=\d+x(\d+)", line)
+                if resolution:
+                    height = int(resolution.group(1))
+                    max_height = max(max_height, height)
+        return max_height
+    except Exception as e:
+        print(f"Error fetching max height from m3u8: {e}")
+    return 0
 
 # Function to get keys using PSSH and license URL
 def get_keys(pssh, lic_url, wvd_device_path):
@@ -123,36 +149,40 @@ def get_keys(pssh, lic_url, wvd_device_path):
         print(f"Could not decode PSSH data as Base64: {e}")
         return []
 
-    device = Device.load(wvd_device_path)
-    cdm = Cdm.from_device(device)
-    session_id = cdm.open()
-    challenge = cdm.get_license_challenge(session_id, pssh)
-    
-    # Headers for the license request
-    headers = {
-        'Content-Type': 'application/octet-stream',
-        'Origin': 'https://www.9now.com.au',
-        'Referer': 'https://www.9now.com.au/',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    }
-
-    # Make the license request
-    licence = requests.post(lic_url, headers=headers, data=challenge)
-    
-    # Check for errors in the response
     try:
-        licence.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        print(f"HTTPError: {e}")
-        print(f"Response Headers: {licence.headers}")
-        print(f"Response Text: {licence.text}")
-        raise
+        device = Device.load(wvd_device_path)
+        cdm = Cdm.from_device(device)
+        session_id = cdm.open()
+        challenge = cdm.get_license_challenge(session_id, pssh)
+        
+        # Headers for the license request
+        headers = {
+            'Content-Type': 'application/octet-stream',
+            'Origin': 'https://www.9now.com.au',
+            'Referer': 'https://www.9now.com.au/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        }
 
-    # Parse the license response
-    cdm.parse_license(session_id, licence.content)
-    keys = [f"{key.kid.hex}:{key.key.hex()}" for key in cdm.get_keys(session_id) if key.type == 'CONTENT']
-    cdm.close(session_id)
-    return keys
+        # Make the license request
+        licence = requests.post(lic_url, headers=headers, data=challenge)
+        
+        # Check for errors in the response
+        try:
+            licence.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            print(f"HTTPError: {e}")
+            print(f"Response Headers: {licence.headers}")
+            print(f"Response Text: {licence.text}")
+            raise
+
+        # Parse the license response
+        cdm.parse_license(session_id, licence.content)
+        keys = [f"{key.kid.hex}:{key.key.hex()}" for key in cdm.get_keys(session_id) if key.type == 'CONTENT']
+        cdm.close(session_id)
+        return keys
+    except Exception as e:
+        print(f"Error fetching keys: {e}")
+    return []
 
 # Function to process and print the download command
 def get_download_command(video_url, downloads_path, wvd_device_path):
@@ -169,7 +199,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
             mpd_url = source['src']
             lic_url = source['key_systems']['com.widevine.alpha']['license_url']
             pssh = get_pssh(mpd_url)
-            max_height = get_max_height(mpd_url)
+            max_height = get_max_height_mpd(mpd_url)
             if pssh:
                 keys = get_keys(pssh, lic_url, wvd_device_path)
                 # Print the requested information
@@ -187,7 +217,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
             unencrypted_source = next((src for src in sources if 'src' in src and 'master.m3u8' in src['src']), None)
             if unencrypted_source:
                 m3u8_url = unencrypted_source['src']
-                max_height = get_max_height(m3u8_url)
+                max_height = get_max_height_m3u8(m3u8_url)
                 # Print the download command for unencrypted videos
                 print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{m3u8_url}")
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
