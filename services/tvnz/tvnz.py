@@ -40,7 +40,7 @@ BRIGHTCOVE_HEADERS = {
     "Origin": "https://www.tvnz.co.nz",
     "Referer": "https://www.tvnz.co.nz/"
 }
-BRIGHTCOVE_API = lambda video_id: f"https://edge.api.brightcove.com/playback/v1/accounts/{BRIGHTCOVE_ACCOUNT}/videos/{video_id}"
+BRIGHTCOVE_API = lambda video_id: f"https://playback.brightcovecdn.com/playback/v1/accounts/{BRIGHTCOVE_ACCOUNT}/videos/{video_id}"
 TOKEN_URL = 'https://login.tvnz.co.nz/v1/token'
 
 class bcolors:
