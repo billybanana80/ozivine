@@ -3,6 +3,7 @@ import datetime as dt
 import base64
 import subprocess
 import re
+import os
 
 #   Ozivine: 10Play Video Downloader
 #   Author: billybanana
@@ -14,7 +15,7 @@ import re
 #   Key Features:
 #   1. Extract Video ID: Parses the 10Play video URL to extract the video id and then fetches the show/movie info from the 10Play API.
 #   2. Print Download Information: Outputs the M3U8 URL required for downloading the video content.
-#   3. Note: this script functions for non-encrypted video files only (10Play files are not currently encrypted).
+#   3. Note: this script functions for AES_128 encrypted video files only.
 
 # Formatting for output
 class bcolors:
@@ -56,7 +57,7 @@ def get_bearer_token(username, password):
             return 'Bearer ' + data['jwt']['accessToken']
     return None
 
-# Function to extract video details and manifest URL
+# Function to extract video details and videoId
 def extract_video_details(video_id, token):
     video_api_url = f'https://10play.com.au/api/v1/videos/{video_id}'
     auth_headers = headers.copy()
@@ -66,23 +67,53 @@ def extract_video_details(video_id, token):
     if response.status_code == 200:
         video_data = response.json()
         if 'playbackApiEndpoint' in video_data:
-            playback_url = video_data['playbackApiEndpoint']
+            playback_url = video_data['playbackApiEndpoint'] + "?platform=web"
             playback_response = requests.get(playback_url, headers=auth_headers)
             if playback_response.status_code == 200:
                 playback_data = playback_response.json()
-                if 'source' in playback_data:
-                    return playback_data['source'], video_data
+
+                # Get the videoId (this is the key information we need now)
+                if 'dai' in playback_data and 'videoId' in playback_data['dai']:
+                    return playback_data['dai']['videoId'], video_data  # Also return video_data for filename formatting
+                else:
+                    print(f"{bcolors.FAIL}Missing videoId in playback data{bcolors.ENDC}")
+            else:
+                print(f"{bcolors.FAIL}Failed to fetch playback data{bcolors.ENDC}")
+        else:
+            print(f"{bcolors.FAIL}playbackApiEndpoint missing in video data{bcolors.ENDC}")
+    else:
+        print(f"{bcolors.FAIL}Failed to fetch video details{bcolors.ENDC}")
+    
     return None, None
 
-# Function to get the final redirected URL
-def get_final_url(manifest_url):
-    session = requests.Session()
-    response = session.get(manifest_url, headers=headers, allow_redirects=True)
-    return response.url
+# Function to extract video ID from URL
+def extract_video_id(url):
+    match = re.search(r'/([^/]+)/?$', url)
+    return match.group(1) if match else None
 
-# Function to modify the manifest URL to get the 720p stream
-def modify_manifest_url(manifest_url):
-    return manifest_url.replace('-,150', '-,300,150')
+# Function to retrieve manifest URL using the new config endpoint with correct headers
+def get_manifest(video_id):
+    CONFIG = "https://vod.ten.com.au/config/androidapps-v2"
+    
+    config = requests.get(CONFIG).json()
+    url = config["endpoints"]["videos"]["server"] + config["endpoints"]["videos"]["methods"]["getVideobyIDs"]
+    url = url.replace("[ids]", video_id).replace("[state]", "AU")  # Add video id and state (geolocation)
+    
+    # Use the correct user-agent to get the right manifest
+    manifest_headers = {
+        "User-Agent": "Mobile Safari/537.36 10play/6.2.2 UAP"
+    }
+
+    content = requests.get(url, headers=manifest_headers).json()
+    
+    if content and 'items' in content and content['items']:
+        items = content['items'][0]
+        hls_url = requests.head(items.get("HLSURL"), allow_redirects=True, headers=manifest_headers).url  # Follow redirects to get real URL
+        real_url = hls_url.replace(",150,", ",300,150,")  # Replace bitrate for higher resolution
+        return real_url
+    else:
+        print(f"{bcolors.FAIL}No items found in the video response.{bcolors.ENDC}")
+        return None
 
 # Function to format the filename based on video details
 def format_file_name(video_data):
@@ -105,7 +136,6 @@ def format_file_name(video_data):
 # Function to format and display download command
 def display_download_command(manifest_url, formatted_file_name, downloads_path):
     download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
-    
     print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
     print(download_command)
@@ -113,11 +143,6 @@ def display_download_command(manifest_url, formatted_file_name, downloads_path):
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == 'y':
         subprocess.run(download_command, shell=True)
-
-# Function to extract video ID from URL
-def extract_video_id(url):
-    match = re.search(r'/([^/]+)/?$', url)
-    return match.group(1) if match else None
 
 # Main logic
 def main(video_url, downloads_path, credentials):
@@ -131,18 +156,16 @@ def main(video_url, downloads_path, credentials):
     token = get_bearer_token(username, password)
     if token:
         print(f"{bcolors.OKGREEN}Login successful, token obtained{bcolors.ENDC}")
-        manifest_url, video_data = extract_video_details(video_id, token)
-        if manifest_url and video_data:
-            final_url = get_final_url(manifest_url)
-            if final_url:
-                modified_manifest_url = modify_manifest_url(final_url)
+        extracted_video_id, video_data = extract_video_details(video_id, token)
+        
+        if extracted_video_id:
+            manifest_url = get_manifest(extracted_video_id)
+            if manifest_url:
                 formatted_file_name = format_file_name(video_data)
-                display_download_command(modified_manifest_url, formatted_file_name, downloads_path)
+                display_download_command(manifest_url, formatted_file_name, downloads_path)
             else:
-                print(f"{bcolors.FAIL}Failed to get final manifest URL{bcolors.ENDC}")
+                print(f"{bcolors.FAIL}Failed to retrieve manifest URL{bcolors.ENDC}")
         else:
-            print(f"{bcolors.FAIL}Failed to extract manifest URL{bcolors.ENDC}")
+            print(f"{bcolors.FAIL}Failed to extract video ID{bcolors.ENDC}")
     else:
         print(f"{bcolors.FAIL}Login failed{bcolors.ENDC}")
-
-
