@@ -127,7 +127,7 @@ def extract_info(video_url, cookies_path):
     }
     headers['Authorization'] = f'Bearer {auth_token}'
     media_resp = session.get(media_url, params=media_params, headers=headers).json()
-    
+
     media = media_resp.get('media', {})
     sources = media.get('sources', [])
     mpd_url = None
@@ -174,7 +174,7 @@ def get_keys(pssh, lic_url, wvd_device_path):
     cdm = Cdm.from_device(device)
     session_id = cdm.open()
     challenge = cdm.get_license_challenge(session_id, pssh)
-    
+
     headers = {
         'Content-Type': 'application/dash+xml',
         'Origin': 'https://7plus.com.au',
@@ -183,7 +183,7 @@ def get_keys(pssh, lic_url, wvd_device_path):
     }
 
     licence = requests.post(lic_url, headers=headers, data=challenge)
-    
+
     try:
         licence.raise_for_status()
     except requests.exceptions.HTTPError as e:
@@ -228,7 +228,7 @@ def get_resolution_from_m3u8(m3u8_url):
     best_resolution = max(resolutions, key=lambda r: int(r.split('x')[1]))
     return f"{best_resolution.split('x')[1]}p"
 
-def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path):
+def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, autodownload):
     formats = info.get('formats')
     if not formats:
         print(f"{bcolors.FAIL}No formats found in info{bcolors.ENDC}")
@@ -255,7 +255,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             download_command = f"""N_m3u8DL-RE "{url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
             if keys:
                 download_command += " --key " + " --key ".join(keys)
-        
+
         print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{url}")
         print(f"{bcolors.RED}License URL: {bcolors.ENDC}{lic_url}")
         print(f"{bcolors.LIGHTBLUE}PSSH: {bcolors.ENDC}{pssh}")
@@ -263,9 +263,8 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
         print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
         print(download_command)
-        
-        user_input = input("Do you wish to download? Y or N: ").strip().lower()
-        if user_input == 'y':
+
+        if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
             subprocess.run(download_command, shell=True)
     elif ext == 'm3u8':
         if url:
@@ -277,18 +276,17 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
                 formatted_file_name += f".{season_episode_tag}"
             formatted_file_name += f".{resolution}.7PLUS.WEB-DL.AAC2.0.H.264"
             download_command = f"""N_m3u8DL-RE "{url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
-            
+
             print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{url}")
             print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
             print(download_command)
-            
-            user_input = input("Do you wish to download? Y or N: ").strip().lower()
-            if user_input == 'y':
+
+            if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
                 subprocess.run(download_command, shell=True)
         else:
-            print(f"{bcolors.FAIL}Failed to retrieve necessary information for download{bcolors.ENDC}")       
+            print(f"{bcolors.FAIL}Failed to retrieve necessary information for download{bcolors.ENDC}")
 
-def main(video_url, downloads_path, wvd_device_path, cookies_path):
+def main(video_url, downloads_path, wvd_device_path, autodownload, cookies_path):
     info = extract_info(video_url, cookies_path)
     if not info:
         return
@@ -296,15 +294,15 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
     path, episode_id = re.search(r'https?://(?:www\.)?7plus\.com\.au/(?P<path>[^?]+\?.*?\bepisode-id=(?P<id>[^&#]+))', video_url).groups()
     show_name = path.split('?')[0]
     show_api_url = f"https://component-cdn.swm.digital/content/{show_name}?episode-id={episode_id}&platform-id=web&market-id=29&platform-version=1.0.95129&api-version=4.9&signedup=true"
-    
+
     show_response = requests.get(show_api_url).json()
     show_title = show_response['title'].replace(" ", ".")
     alt_tag = show_response['pageMetaData']['objectGraphImage']['altTag']
-    
+
     season_episode_tag = ""
     season_episode_match = re.search(r'Season (\d+) Episode (\d+)', alt_tag)
     if season_episode_match:
         season, episode = season_episode_match.groups()
         season_episode_tag = f"S{season.zfill(2)}E{episode.zfill(2)}"
-    
-    get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path)
+
+    get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, autodownload)
