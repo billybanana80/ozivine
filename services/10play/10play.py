@@ -83,7 +83,7 @@ def extract_video_details(video_id, token):
             print(f"{bcolors.FAIL}playbackApiEndpoint missing in video data{bcolors.ENDC}")
     else:
         print(f"{bcolors.FAIL}Failed to fetch video details{bcolors.ENDC}")
-    
+
     return None, None
 
 # Function to extract video ID from URL
@@ -94,18 +94,18 @@ def extract_video_id(url):
 # Function to retrieve manifest URL using the new config endpoint with correct headers
 def get_manifest(video_id):
     CONFIG = "https://vod.ten.com.au/config/androidapps-v2"
-    
+
     config = requests.get(CONFIG).json()
     url = config["endpoints"]["videos"]["server"] + config["endpoints"]["videos"]["methods"]["getVideobyIDs"]
     url = url.replace("[ids]", video_id).replace("[state]", "AU")  # Add video id and state (geolocation)
-    
+
     # Use the correct user-agent to get the right manifest
     manifest_headers = {
         "User-Agent": "Mobile Safari/537.36 10play/6.2.2 UAP"
     }
 
     content = requests.get(url, headers=manifest_headers).json()
-    
+
     if content and 'items' in content and content['items']:
         items = content['items'][0]
         hls_url = requests.head(items.get("HLSURL"), allow_redirects=True, headers=manifest_headers).url  # Follow redirects to get real URL
@@ -130,25 +130,24 @@ def format_file_name(video_data):
         episode = int(video_data['episode'])
         season_episode_tag = f"S{season:02d}E{episode:02d}"
         formatted_file_name = f"{show_name}.{season_episode_tag}.720p.10Play.WEB-DL.AAC2.0.H.264"
-    
+
     return formatted_file_name
 
 # Function to format and display download command
-def display_download_command(manifest_url, formatted_file_name, downloads_path):
+def display_download_command(manifest_url, formatted_file_name, downloads_path, autodownload):
     download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
     print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
     print(download_command)
-    
-    user_input = input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == 'y':
+
+    if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
         subprocess.run(download_command, shell=True)
 
 # Main logic
-def main(video_url, downloads_path, credentials):
+def main(video_url, downloads_path, credentials, autodownload):
     username, password = credentials.split(':')
     video_id = extract_video_id(video_url)
-    
+
     if not video_id:
         print(f"{bcolors.FAIL}Invalid URL. Please enter a valid 10Play video URL.{bcolors.ENDC}")
         return
@@ -157,12 +156,12 @@ def main(video_url, downloads_path, credentials):
     if token:
         print(f"{bcolors.OKGREEN}Login successful, token obtained{bcolors.ENDC}")
         extracted_video_id, video_data = extract_video_details(video_id, token)
-        
+
         if extracted_video_id:
             manifest_url = get_manifest(extracted_video_id)
             if manifest_url:
                 formatted_file_name = format_file_name(video_data)
-                display_download_command(manifest_url, formatted_file_name, downloads_path)
+                display_download_command(manifest_url, formatted_file_name, downloads_path, autodownload)
             else:
                 print(f"{bcolors.FAIL}Failed to retrieve manifest URL{bcolors.ENDC}")
         else:

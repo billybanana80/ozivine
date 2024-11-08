@@ -40,17 +40,17 @@ def get_manifest_url(video_id, headers):
     # First API call to get SMIL file information
     smil_api_url = f"https://www.sbs.com.au/api/v3/video_smil?id={video_id}"
     smil_response = requests.get(smil_api_url, headers=headers)
-    
+
     if smil_response.status_code != 200:
         print(f"Failed to fetch SMIL data, status code: {smil_response.status_code}")
         return None
-    
+
     smil_data = smil_response.text
     m3u8_url_match = re.search(r'https://[^"]+\.m3u8[^"]*', smil_data)
-    
+
     if m3u8_url_match:
         return m3u8_url_match.group(0)
-    
+
     print("No m3u8 URL found in the SMIL data.")
     return None
 
@@ -58,11 +58,11 @@ def get_manifest_url(video_id, headers):
 def get_show_info(video_id, headers):
     show_api_url = f"https://www.sbs.com.au/api/v3/video_stream?id={video_id}&context=tv"
     response = requests.get(show_api_url, headers=headers)
-    
+
     if response.status_code != 200:
         print(f"Failed to fetch show info, status code: {response.status_code}")
         return None
-    
+
     return response.json()
 
 # Function to extract and print m3u8 URL
@@ -70,15 +70,15 @@ def extract_info(video_url):
     headers = {
         'accept': '*/*',
     }
-    
+
     video_id = extract_video_id(video_url)
     if not video_id:
         print("Failed to extract video ID from the URL.")
         return None
-    
+
     manifest_url = get_manifest_url(video_id, headers)
     show_info = get_show_info(video_id, headers)
-    
+
     if manifest_url and show_info:
         entity_type = show_info['video_object']['externalRelations']['sbsondemand']['entity_type']
         if entity_type == 'MOVIE':
@@ -101,26 +101,25 @@ def extract_info(video_url):
             season_episode_tag = f"S{season_number}E{episode_number}"
             series_name = series_name.replace(' ', '.')
             formatted_file_name = f"{series_name}.{season_episode_tag}.720p.SBS.WEB-DL.AAC2.0.H.264"
-        
+
         return manifest_url, formatted_file_name
     return None, None
 
 # Function to format and display download command
-def display_download_command(manifest_url, formatted_file_name, downloads_path):
+def display_download_command(manifest_url, formatted_file_name, downloads_path, autodownload):
     download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
-    
+
     print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
     print(download_command)
-    
-    user_input = input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == 'y':
+
+    if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
         subprocess.run(download_command, shell=True)
-    
+
 # Main function
-def main(video_url, downloads_path):
+def main(video_url, downloads_path, autodownload):
     manifest_url, formatted_file_name = extract_info(video_url)
     if not manifest_url:
         return
-    
-    display_download_command(manifest_url, formatted_file_name, downloads_path)
+
+    display_download_command(manifest_url, formatted_file_name, downloads_path, autodownload)

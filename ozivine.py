@@ -5,6 +5,7 @@ from rich.console import Console
 from rich.padding import Padding
 from rich.text import Text
 from datetime import datetime
+import argparse
 
 #   Ozivine: Downloader for Australian & New Zealand FTA services
 #   Author: billybanana
@@ -28,7 +29,7 @@ def print_ascii_art(version=None):
         r"| (_) / /| |\ V /| | | | |  __/ " + "\n"
         r" \___/___|_| \_/ |_|_| |_|\___| " + "\n"
         r"                               ",
-        
+
     )
 
     version_info = Text(f"Version {__version__} Copyright © {datetime.now().year} billybanana", style="none")
@@ -41,7 +42,7 @@ def print_ascii_art(version=None):
 
     if version:
         return
-    
+
 # Define color formatting
 class bcolors:
     LIGHTBLUE = '\033[94m'
@@ -64,36 +65,49 @@ def main():
     cookies_path = config.get('cookies_path')
     credentials = config.get('credentials', {})
 
-    video_url = input(f"{bcolors.LIGHTBLUE}Enter the video URL: {bcolors.ENDC}")
+    # Set up argparse to handle command-line arguments
+    parser = argparse.ArgumentParser(description="Process a video URL")
+    parser.add_argument('--url', type=str, help="URL of the video")
+    parser.add_argument('--autodownload', action='store_true', help="Enable autodownload mode")
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Check if URL was passed as an argument, otherwise ask for input
+    if args.url:
+        video_url = args.url
+        print(f"{bcolors.LIGHTBLUE}Enter the video URL: {bcolors.ENDC}{video_url}")
+    else:
+        video_url = input(f"{bcolors.LIGHTBLUE}Enter the video URL: {bcolors.ENDC}")
 
     if video_url.startswith("https://www.9now.com.au"):
         service_module = "services.9now.9now"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 9Now{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path)
+        args = (video_url, downloads_path, wvd_device_path, args.autodownload)
     elif video_url.startswith("https://7plus.com.au"):
         service_module = "services.7plus.7plus"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 7Plus{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, cookies_path)
+        args = (video_url, downloads_path, wvd_device_path, args.autodownload, cookies_path)
     elif video_url.startswith("https://www.sbs.com.au"):
         service_module = "services.sbs.sbs"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating SBS{bcolors.ENDC}")
-        args = (video_url, downloads_path)
+        args = (video_url, downloads_path, args.autodownload)
     elif video_url.startswith("https://iview.abc.net.au"):
         service_module = "services.abciview.abc"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ABC iView{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path)
+        args = (video_url, downloads_path, wvd_device_path, args.autodownload)
     elif video_url.startswith("https://10play.com.au/"):
         service_module = "services.10play.10play"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 10Play{bcolors.ENDC}")
-        args = (video_url, downloads_path, credentials.get("10play")) 
+        args = (video_url, downloads_path, credentials.get("10play"), args.autodownload)
     elif video_url.startswith("https://www.tvnz.co.nz/"):
         service_module = "services.tvnz.tvnz"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating TVNZ{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, credentials.get("tvnz"))  
+        args = (video_url, downloads_path, wvd_device_path, credentials.get("tvnz"), args.autodownload)
     elif video_url.startswith("https://www.threenow.co.nz"):
         service_module = "services.threenow.threenow"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ThreeNow{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path)                      
+        args = (video_url, downloads_path, wvd_device_path, args.autodownload)
     else:
         print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, ABC iView, ThreeNow or TVNZ.{bcolors.ENDC}")
         sys.exit(1)

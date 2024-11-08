@@ -97,7 +97,7 @@ def get_show_info(video_id):
         show_title = data.get("showTitle", "UnknownShow").replace(" ", ".")
         title = data.get("title", "")
         status_title = data.get("status", {}).get("title", "")
-        
+
         if status_title == "MOVIE":
             formatted_title = f"{show_title}.1080p.ABCiView.WEB-DL.AAC2.0.H.264"
         else:
@@ -163,7 +163,7 @@ def format_keys(keys):
     return formatted_keys
 
 # Main execution flow
-def main(video_url, downloads_path, wvd_device_path):
+def main(video_url, downloads_path, wvd_device_path, autodownload):
     client_id = "1d4b5cba-42d2-403e-80e7-34565cdf772d"
     jwt_url = "https://api.iview.abc.net.au/v3/token/jwt"
     drm_url = "https://api.iview.abc.net.au/v3/token/drm/{video_id}"
@@ -179,7 +179,7 @@ def main(video_url, downloads_path, wvd_device_path):
                     formatted_keys = format_keys(license_keys)
                     # Get formatted file name
                     formatted_file_name = get_show_info(video_id)
-                    
+
                     # Print the requested information
                     print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{mpd_url}")
                     print(f"{bcolors.RED}License URL: {bcolors.ENDC}https://wv-keyos.licensekeyserver.com/")
@@ -189,10 +189,9 @@ def main(video_url, downloads_path, wvd_device_path):
                     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                     download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(formatted_keys)
                     print(download_command)
-                    
+
                     if download_command:
-                        user_input = input("Do you wish to download? Y or N: ").strip().lower()
-                        if user_input == 'y':
+                        if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
                             subprocess.run(download_command, shell=True)
                 else:
                     print("Failed to get license keys")
