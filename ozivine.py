@@ -65,7 +65,6 @@ def main():
     cookies_path = config.get('cookies_path')
     credentials = config.get('credentials', {})
 
-
     # Set up argparse to handle command-line arguments
     parser = argparse.ArgumentParser(description="Process a video URL")
     parser.add_argument('--url', type=str, help="URL of the video")
