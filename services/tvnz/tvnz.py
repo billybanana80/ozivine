@@ -98,7 +98,7 @@ class TVNZAPI:
         response = self.session.post(login_url, json=payload, headers=headers)
         response.raise_for_status()
         login_data = response.json()
-        
+
         authorize_url = "https://login.tvnz.co.nz/authorize"
         params = {
             "client_id": "tp5hyPrFuXLJV0jgRWy5l7lEtJlPN98R",
@@ -111,18 +111,18 @@ class TVNZAPI:
             "prompt": "none",
             "auth0Client": "eyJuYW1lIjoiYXV0aDAuanMiLCJ2ZXJzaW9uIjoiOS4xMC4yIn0="
         }
-        
+
         response = self.session.get(authorize_url, params=params, headers=headers)
         response.raise_for_status()
-        
+
         match = re.search(r'authorizationResponse = {type: "authorization_response",response: (.*?)};', response.text)
         if not match:
             raise ValueError("Authorization response not found.")
-        
+
         auth_response = json.loads(match.group(1))
         if "error" in auth_response:
             raise ValueError(f"Authorization error: {auth_response['error_description']}")
-        
+
         self.token = auth_response["access_token"]
         self.token_expires = time() + 3600  # Assuming token expires in 1 hour
         self.session.headers.update({'Authorization': f'Bearer {self.token}'})
@@ -132,7 +132,7 @@ class TVNZAPI:
     def get_video_id_from_url(self, video_url):
         if time() > self.token_expires:
             self._refresh_token()
-            
+
         if "sport" in video_url:
             match = re.search(r'sport/([^/]+)/([^/]+)/([^/]+)', video_url)
             if match:
@@ -148,7 +148,7 @@ class TVNZAPI:
                 raise ValueError("Could not extract video information from the URL.")
             series_name, content_type, season, episode = match.groups()
             api_url = f"https://apis-public-prod.tech.tvnz.co.nz/api/v1/web/play/page/shows/{series_name}/{content_type}/s{season}-e{episode}"
-            
+
             if "movie" in video_url:
                 return self.find_video_id_in_movie(api_url, series_name, season, episode)
             else:
@@ -180,7 +180,7 @@ class TVNZAPI:
         url = f"/shows/{series_name}/episodes/s{season}-e{episode}"
         href = f"/api/v1/web/play/page/shows/{series_name}/episodes/s{season}-e{episode}"
         return self.find_brightcove_video_id(data, url, href)
-    
+
     def find_video_id_in_movie(self, api_url, series_name, season, episode):
         response = self.session.get(api_url)
         response.raise_for_status()
@@ -227,7 +227,7 @@ class TVNZAPI:
         cdm = Cdm.from_device(device)
         session_id = cdm.open()
         challenge = cdm.get_license_challenge(session_id, pssh)
-        
+
         headers = {
             'Content-Type': 'application/octet-stream',
             'Origin': 'https://www.tvnz.co.nz',
@@ -239,7 +239,7 @@ class TVNZAPI:
             headers['Authorization'] = f'Bearer {authorization_token}'
 
         licence = self.session.post(lic_url, headers=headers, data=challenge)
-        
+
         try:
             licence.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -265,7 +265,7 @@ class TVNZAPI:
                 height = int(representation.get("height", 0))
                 if height > max_height:
                     max_height = height
-        
+
         if max_height >= 1080:
             return "1080p"
         elif max_height >= 720:
@@ -302,7 +302,7 @@ class TVNZAPI:
         response = self.session.get(token_url, headers=headers)
         response.raise_for_status()
         data = response.json()
-        
+
         encryption = data.get("encryption")
         if encryption and "drmToken" in encryption:
             return encryption["drmToken"]
@@ -338,7 +338,7 @@ def handle_mediakind_sport_video(api, video_url, downloads_path):
         if video_id:
             mpd_url = f"https://replay.vod-tvnz-prod.tvnz.io/dash-enc/{video_id}/manifest.mpd"
             pssh = api.get_pssh(mpd_url)
-            
+
             # Fetch secondary token
             secondary_token = api.get_secondary_authorization_token(video_id)
 
@@ -360,7 +360,7 @@ def handle_mediakind_sport_video(api, video_url, downloads_path):
 
                 user_input = input("Do you wish to download? Y or N: ").strip().lower()
                 if user_input == 'y':
-                    subprocess.run(download_command, shell=True)                
+                    subprocess.run(download_command, shell=True)
             else:
                 print(f"{bcolors.FAIL}Failed to extract PSSH data{bcolors.ENDC}")
         else:
@@ -368,7 +368,7 @@ def handle_mediakind_sport_video(api, video_url, downloads_path):
     else:
         print(f"{bcolors.FAIL}Regex match failed for the URL: {video_url}{bcolors.ENDC}")
 
-def get_download_command(video_url, downloads_path, wvd_device_path, credentials):
+def get_download_command(video_url, downloads_path, wvd_device_path, credentials, autodownload):
     api = TVNZAPI()
     email, password = credentials.split(":")
     api.login(email, password)
@@ -378,9 +378,9 @@ def get_download_command(video_url, downloads_path, wvd_device_path, credentials
         return
     else:
         video_id = video_id.split(":")[-1] if isinstance(video_id, str) else video_id
-        session = requests.Session()  
+        session = requests.Session()
         response = session.get(BRIGHTCOVE_API(video_id), headers=BRIGHTCOVE_HEADERS).json()
-    
+
     download_command = None
 
     if "sport" in video_url:
@@ -398,7 +398,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path, credentials
                 formatted_file_name = f"{series_name}.{{resolution}}.TVNZ.WEB-DL.AAC2.0.H.264"
         else:
             raise ValueError("Invalid video URL format.")
-    
+
     if 'sources' in response:
         sources = response['sources']
         source = next((src for src in sources if 'key_systems' in src and 'com.widevine.alpha' in src['key_systems']), None)
@@ -418,18 +418,17 @@ def get_download_command(video_url, downloads_path, wvd_device_path, credentials
                     print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
                 download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(keys)
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                print(download_command)            
+                print(download_command)
             else:
                 print(f"{bcolors.FAIL}Failed to extract PSSH data{bcolors.ENDC}")
         else:
             print(f"{bcolors.FAIL}No Widevine-protected source found{bcolors.ENDC}")
     else:
         print(f"{bcolors.FAIL}No 'sources' found in the response{bcolors.ENDC}")
-    
+
     if download_command:
-        user_input = input("Do you wish to download? Y or N: ").strip().lower()
-        if user_input == 'y':
+        if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
             subprocess.run(download_command, shell=True)
 
-def main(video_url, downloads_path, wvd_device_path, credentials):
-    get_download_command(video_url, downloads_path, wvd_device_path, credentials)
+def main(video_url, downloads_path, wvd_device_path, credentials, autodownload):
+    get_download_command(video_url, downloads_path, wvd_device_path, credentials, autodownload)
