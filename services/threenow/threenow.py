@@ -59,22 +59,22 @@ def get_video_info(video_url):
     match = re.search(r'shows/[^/]+/(?:[^/]+/)*([^/]+)/([^/]+)$', video_url)
     if not match:
         raise ValueError("Could not extract show_id and videoId from the URL.\n Enter the full video URL please:\n eg: https://www.threenow.co.nz/shows/thirst-with-shay-mitchell/season-1-ep-1/1718148621037/M86965-766")
-    
+
     show_id, video_id = match.groups()
 
     # Print the extracted show_id and video_id for debugging
     # print(f"Extracted show_id: {show_id}")
     # print(f"Extracted video_id: {video_id}")
-    
+
     api_url = f"https://now-api.fullscreen.nz/v5/shows/{show_id}"
-    
+
     # Print the api_url for debugging
     # print(f"API URL: {api_url}")
-    
+
     response = requests.get(api_url)
     response.raise_for_status()
     data = response.json()
-    
+
     # Check if genres indicate a movie or current affairs or comedy
     if "movie" in data.get("genres", []) or "current-affairs" in data.get("genres", []) or "comedy" in data.get("genres", []):
         # Use easyWatch section if it exists
@@ -95,7 +95,7 @@ def get_video_info(video_url):
             for episode in season.get("episodes", []):
                 if episode.get("videoId") == video_id or episode.get("externalMediaId") == video_id:
                     return episode
-    
+
     raise ValueError("Could not find the video ID in the API response.")
 
 # Get additional video information for filename formatting
@@ -123,7 +123,7 @@ def get_manifest_url(playback_info):
             dash_source = (source['src'], source['key_systems']['com.widevine.alpha']['license_url'] if 'key_systems' in source and 'com.widevine.alpha' in source['key_systems'] else None)
         elif source.get('type') == 'application/x-mpegURL':
             hls_source = (source['src'], None)
-    
+
     if dash_source:
         return dash_source
     elif hls_source:
@@ -204,7 +204,7 @@ def get_best_video_height(url_mpd):
         print(f"XML parsing error: {e}")
         print(f"MPD content: {content}")
         raise
-    
+
     heights = []
     for adaptation_set in root.findall(".//{urn:mpeg:dash:schema:mpd:2011}AdaptationSet"):
         for representation in adaptation_set.findall("{urn:mpeg:dash:schema:mpd:2011}Representation"):
@@ -225,10 +225,10 @@ def get_formatted_filename(show_id, video_id, best_height):
     show_info = get_additional_video_info(show_id, video_id)
     show_title = show_info['showTitle']
     name = show_info['name']
-    
+
     # Remove spaces, commas, and dashes, and replace with dots
     show_title = re.sub(r'[ ,\-]', '.', show_title)
-    
+
     # Handle different types of content
     if re.match(r'Season \d+ Ep \d+', name):
         season_episode = re.sub(r'Season (\d+) Ep (\d+)', lambda m: f"S{int(m.group(1)):02}E{int(m.group(2)):02}", name)
@@ -243,15 +243,15 @@ def get_formatted_filename(show_id, video_id, best_height):
         return f"{show_title}.{best_height}.ThreeNow.WEB-DL.AAC2.0.H.264"
 
 # Print all the required information and download command
-def get_download_command(video_url, downloads_path, wvd_device_path):
+def get_download_command(video_url, downloads_path, wvd_device_path, autodownload):
     try:
         video_info = get_video_info(video_url)
         show_id = video_info['showId']
         video_id = video_info['videoId']
-        
+
         playback_info = get_playback_info(video_info['externalMediaId'])
         manifest_url, lic_url = get_manifest_url(playback_info)
-        
+
         if manifest_url.endswith("master.m3u8"):
             # Handling HLS playlist
             formatted_filename = get_formatted_filename(show_id, video_id, "720p")
@@ -259,8 +259,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
             print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
             print(download_command)
 
-            user_input = input("Do you wish to download? Y or N: ").strip().lower()
-            if user_input == 'y':
+            if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
                 subprocess.run(download_command, shell=True)
         else:
             # Handling DASH manifest
@@ -268,21 +267,20 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
                 pssh, lic_url = get_pssh_and_license(manifest_url)
                 best_height = get_best_video_height(manifest_url)
                 formatted_filename = get_formatted_filename(show_id, video_id, best_height)
-                
+
                 print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{manifest_url}")
                 print(f"{bcolors.RED}License URL: {bcolors.ENDC}{lic_url}")
                 print(f"{bcolors.LIGHTBLUE}PSSH: {bcolors.ENDC}{pssh}")
-                
+
                 keys = get_keys(pssh, lic_url, wvd_device_path)
                 for key in keys:
                     print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
-                
+
                 download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}" --key """ + ' --key '.join(keys)
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(download_command)
 
-                user_input = input("Do you wish to download? Y or N: ").strip().lower()
-                if user_input == 'y':
+                if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
                     subprocess.run(download_command, shell=True)
             except ValueError as e:
                 # Fallback to HLS if DASH content is not encrypted
@@ -296,12 +294,10 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(download_command)
 
-                user_input = input("Do you wish to download? Y or N: ").strip().lower()
-                if user_input == 'y':
+                if autodownload or input("Do you wish to download? Y or N: ").strip().lower() == 'y':
                     subprocess.run(download_command, shell=True)
     except Exception as e:
         print(f"Error: {e}")
 
-def main(video_url, downloads_path, wvd_device_path):
-    get_download_command(video_url, downloads_path, wvd_device_path)
-
+def main(video_url, downloads_path, wvd_device_path, autodownload):
+    get_download_command(video_url, downloads_path, wvd_device_path, autodownload)
