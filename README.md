@@ -178,3 +178,5 @@ Commands:
 1. This project is purely for educational purposes and does not condone piracy
 2. RSA key pair required for key derivation is not included in this project
 
+This project is licensed under the terms of the MIT license.
+

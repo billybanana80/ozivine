@@ -18,7 +18,7 @@ from datetime import datetime
 #   5. Note: this script functions for both encrypted and non-encrypted video files.
 
 console = Console()
-__version__ = "1.5"  # Replace with the actual version
+__version__ = "1.6"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
@@ -64,7 +64,13 @@ def main():
     cookies_path = config.get('cookies_path')
     credentials = config.get('credentials', {})
 
-    video_url = input(f"{bcolors.LIGHTBLUE}Enter the video URL: {bcolors.ENDC}")
+    # Check if a URL is provided as a command-line argument
+    if len(sys.argv) > 1:
+        video_url = sys.argv[1].strip()
+        print(f"{bcolors.LIGHTBLUE}Video URL: {bcolors.ENDC}{video_url}")
+    else:
+        # Prompt user for manual input if no command-line argument is given
+        video_url = input(f"{bcolors.LIGHTBLUE}Enter the video URL: {bcolors.ENDC}").strip()
 
     if video_url.startswith("https://www.9now.com.au"):
         service_module = "services.9now.9now"
