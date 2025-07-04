@@ -5,10 +5,10 @@ import subprocess
 import re
 import os
 
-#   Ozivine: 10Play Video Downloader
+#   Ozivine: 10 Video Downloader
 #   Author: billybanana
 #   Usage: enter the series/season/episode URL to retrieve the m3u8 Manifest.
-#   eg: https://10play.com.au/airport-24-7/episodes/season-1/episode-1/tpv250603pulhk
+#   eg: https://10.com.au/airport-24-7/episodes/season-1/episode-1/tpv250603pulhk
 #   Authentication: Login
 #   Geo-Locking: requires an Australian IP address
 #   Quality: up to 1080p
@@ -33,13 +33,13 @@ class bcolors:
     ORANGE = '\033[93m'
 
 # URLs and Headers
-login_url = 'https://10play.com.au/api/user/auth'
+login_url = 'https://10.com.au/api/user/auth'
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0',
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Origin': 'https://10play.com.au',
-    'Referer': 'https://10play.com.au/'
+    'Origin': 'https://10.com.au',
+    'Referer': 'https://10.com.au/'
 }
 
 # Function to get bearer token
@@ -59,7 +59,7 @@ def get_bearer_token(username, password):
 
 # Function to extract video details and videoId
 def extract_video_details(video_id, token):
-    video_api_url = f'https://10play.com.au/api/v1/videos/{video_id}'
+    video_api_url = f'https://10.com.au/api/v1/videos/{video_id}'
     auth_headers = headers.copy()
     auth_headers['Authorization'] = token
 
@@ -133,13 +133,13 @@ def format_file_name(video_data, resolution):
     season = int(video_data['season'])
 
     if genre == 'movies':
-        return f"{show_name}.{resolution}.10Play.WEB-DL.AAC2.0.H.264"
+        return f"{show_name}.{resolution}.10.WEB-DL.AAC2.0.H.264"
     elif genre == 'sport':
-        return f"{clip_title}.S{season}.{resolution}.10Play.WEB-DL.AAC2.0.H.264"
+        return f"{clip_title}.S{season}.{resolution}.10.WEB-DL.AAC2.0.H.264"
     else:
         episode = int(video_data['episode'])
         season_episode_tag = f"S{season:02d}E{episode:02d}"
-        return f"{show_name}.{season_episode_tag}.{resolution}.10Play.WEB-DL.AAC2.0.H.264"
+        return f"{show_name}.{season_episode_tag}.{resolution}.10.WEB-DL.AAC2.0.H.264"
 
 # Function to format and display download command
 def display_download_command(manifest_url, formatted_file_name, downloads_path):
@@ -158,7 +158,7 @@ def main(video_url, downloads_path, credentials):
     video_id = extract_video_id(video_url)
 
     if not video_id:
-        print(f"{bcolors.FAIL}Invalid URL. Please enter a valid 10Play video URL.{bcolors.ENDC}")
+        print(f"{bcolors.FAIL}Invalid URL. Please enter a valid 10 video URL.{bcolors.ENDC}")
         return
 
     token = get_bearer_token(username, password)
