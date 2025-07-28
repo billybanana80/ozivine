@@ -56,6 +56,7 @@ class bcolors:
 def get_video_id_from_url(video_url):
     season_episode_match = re.search(r'9now\.com\.au/([^/]+)/season-(\d+)/episode-(\d+)', video_url)
     year_episode_match = re.search(r'9now\.com\.au/([^/]+)/(\d{4})/episode-(\d+)', video_url)
+    special_episode_match = re.search(r'9now\.com\.au/([^/]+)/special/episode-(\d+)', video_url)
     
     if season_episode_match:
         series_name, season, episode = season_episode_match.groups()
@@ -63,6 +64,9 @@ def get_video_id_from_url(video_url):
     elif year_episode_match:
         series_name, year, episode = year_episode_match.groups()
         api_url = f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_name}?device=web"
+    elif special_episode_match:
+        series_name, episode = special_episode_match.groups()
+        api_url = f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_name}/seasons/special/episodes/episode-{episode}?device=web"    
     else:
         raise ValueError("Could not extract series name, season/year, or episode from the URL.")
     
@@ -76,6 +80,12 @@ def get_video_id_from_url(video_url):
             return series_name, f"S{int(season):02}", f"E{int(episode):02}", video_id
         except KeyError:
             raise ValueError("Could not find the video ID in the API response.")
+    elif special_episode_match:
+        try:
+            video_id = data['episode']['video']['brightcoveId']
+            return series_name, f"S00", f"E{int(episode):02}", video_id
+        except KeyError:
+            raise ValueError("Could not find the video ID in the API response.")    
     elif year_episode_match:
         try:
             episodes = data['items'][0]['items']

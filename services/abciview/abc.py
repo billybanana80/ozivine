@@ -187,7 +187,7 @@ def main(video_url, downloads_path, wvd_device_path):
                     for key in formatted_keys:
                         print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
                     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                    download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(formatted_keys)
+                    download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video res=1080 --select-audio all --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(formatted_keys)
                     print(download_command)
                     
                     if download_command:
