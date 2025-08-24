@@ -8,6 +8,7 @@ from pywidevine.device import Device
 from pywidevine.pssh import PSSH
 import base64
 import binascii
+import datetime
 
 #   9Now Video Downloader
 #   Author: billybanana
@@ -53,49 +54,144 @@ class bcolors:
     YELLOW = '\033[93m'
     ORANGE = '\033[38;5;208m'
 
+
+def _season_tag_from_slug(slug: str) -> str:
+    """
+    season-20252026 -> S2025
+    season-5        -> S05
+    fallback        -> S00
+    """
+    if not slug or not slug.startswith("season-"):
+        return "S00"
+    rest = slug[len("season-"):]
+    # year span 2025/2026 style as 20252026
+    m = re.match(r"(\d{4})(\d{4})", rest)
+    if m:
+        return f"S{m.group(1)}"
+    # plain number
+    m2 = re.match(r"(\d+)", rest)
+    if m2:
+        return f"S{int(m2.group(1)):02d}"
+    return "S00"
+
+def _get_season_page(series_name: str, season_slug: str):
+    url = f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_name}/seasons/{season_slug}?device=web"
+    r = requests.get(url, timeout=20)
+    if r.status_code == 200:
+        return r.json()
+    return None
+
+def _extract_clips_from_page(page_json):
+    """
+    Find clip items from the page rails.
+    Returns list of dicts (clip items).
+    """
+    out = []
+    if not page_json:
+        return out
+    for block in page_json.get("items", []):
+        for it in block.get("items", []):
+            if it.get("type") == "clip":
+                out.append(it)
+    return out
+
+def _clip_sort_key(c):
+    dt = c.get('availability') or c.get('updatedAt') or ""
+    for f in ('%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ'):
+        try:
+            return datetime.datetime.strptime(dt, f)
+        except Exception:
+            pass
+    return datetime.datetime.min
+
 def get_video_id_from_url(video_url):
+    # Episodes (existing patterns)
     season_episode_match = re.search(r'9now\.com\.au/([^/]+)/season-(\d+)/episode-(\d+)', video_url)
-    year_episode_match = re.search(r'9now\.com\.au/([^/]+)/(\d{4})/episode-(\d+)', video_url)
-    special_episode_match = re.search(r'9now\.com\.au/([^/]+)/special/episode-(\d+)', video_url)
-    
+    year_episode_match   = re.search(r'9now\.com\.au/([^/]+)/(\d{4})/episode-(\d+)', video_url)
+    special_episode_match= re.search(r'9now\.com\.au/([^/]+)/special/episode-(\d+)', video_url)
+
+    # NEW: Clips
+    # e.g. https://www.9now.com.au/premier-league-epl-football/season-20252026/clip-cmeop4x67000m0hmmc1822v1i
+    clip_match = re.search(r'9now\.com\.au/([^/]+)/(?P<season>season-[^/]+)/(?P<clip>clip-[^/?#]+)', video_url)
+
     if season_episode_match:
         series_name, season, episode = season_episode_match.groups()
         api_url = f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_name}/seasons/season-{season}/episodes/episode-{episode}?device=web"
-    elif year_episode_match:
-        series_name, year, episode = year_episode_match.groups()
-        api_url = f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_name}?device=web"
-    elif special_episode_match:
-        series_name, episode = special_episode_match.groups()
-        api_url = f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_name}/seasons/special/episodes/episode-{episode}?device=web"    
-    else:
-        raise ValueError("Could not extract series name, season/year, or episode from the URL.")
-    
-    response = requests.get(api_url)
-    response.raise_for_status()
-    data = response.json()
-    
-    if season_episode_match:
+        data = requests.get(api_url).json()
         try:
             video_id = data['episode']['video']['brightcoveId']
             return series_name, f"S{int(season):02}", f"E{int(episode):02}", video_id
         except KeyError:
             raise ValueError("Could not find the video ID in the API response.")
+
     elif special_episode_match:
+        series_name, episode = special_episode_match.groups()
+        api_url = f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_name}/seasons/special/episodes/episode-{episode}?device=web"
+        data = requests.get(api_url).json()
         try:
             video_id = data['episode']['video']['brightcoveId']
-            return series_name, f"S00", f"E{int(episode):02}", video_id
+            return series_name, "S00", f"E{int(episode):02}", video_id
         except KeyError:
-            raise ValueError("Could not find the video ID in the API response.")    
+            raise ValueError("Could not find the video ID in the API response.")
+
     elif year_episode_match:
+        series_name, year, episode = year_episode_match.groups()
+        api_url = f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_name}?device=web"
+        data = requests.get(api_url).json()
         try:
             episodes = data['items'][0]['items']
             for item in episodes:
-                if item['episodeNumber'] == int(episode):
+                if item.get('episodeNumber') == int(episode):
                     video_id = item['video']['brightcoveId']
                     return series_name, f"S{year}", f"E{int(episode):02}", video_id
             raise ValueError("Could not find the episode in the API response.")
         except KeyError:
             raise ValueError("Could not find the video ID in the API response.")
+
+    elif clip_match:
+        series_name = clip_match.group(1)
+        season_slug = clip_match.group('season')          # e.g. season-20252026
+        clip_slug   = clip_match.group('clip')            # e.g. clip-cmeop4x...
+
+        # Fetch the season landing page, find the clip by its link path
+        season_page = _get_season_page(series_name, season_slug)
+        clips = _extract_clips_from_page(season_page)
+
+        # Sort newest -> oldest, then find index
+        clips_sorted = sorted(clips, key=_clip_sort_key, reverse=True)
+
+        # The webUrl will look like "/{series}/{season}/{clip-slug}"
+        target_path_tail = f"/{series_name}/{season_slug}/{clip_slug}".lower()
+
+        found = None
+        for idx, c in enumerate(clips_sorted, start=1):
+            web_url = ((c.get('link') or {}).get('webUrl') or '').lower()
+            if web_url.endswith(target_path_tail):
+                found = (idx, c)
+                break
+
+        if not found:
+            raise ValueError("Clip not found on the season page rails (URL mismatch).")
+
+        clip_idx, clip_obj = found
+        video_id = (clip_obj.get('video') or {}).get('brightcoveId')
+        if not video_id:
+            raise ValueError("Brightcove ID missing for the matched clip.")
+
+
+        # Clean up the display name for filesystem use
+        raw_title = clip_obj.get('displayName') or clip_obj.get('name') or ''
+        safe_title = re.sub(r'[^A-Za-z0-9]+', '.', raw_title)
+        safe_title = re.sub(r'\.+', '.', safe_title).strip('.')
+
+        season_tag = _season_tag_from_slug(season_slug)
+        episode_tag = f"C{clip_idx:02d}"
+
+        return series_name, season_tag, episode_tag, video_id, safe_title
+
+    else:
+        raise ValueError("Could not extract series name, season/year/clip from the URL.")
+
 
 # Function to get PSSH from MPD URL
 def get_pssh(url_mpd):
@@ -196,7 +292,15 @@ def get_keys(pssh, lic_url, wvd_device_path):
 
 # Function to process and print the download command
 def get_download_command(video_url, downloads_path, wvd_device_path):
-    series_name, season, episode, video_id = get_video_id_from_url(video_url)
+    video_info = get_video_id_from_url(video_url)
+
+    # Handle clip (5 values) vs episode (4 values)
+    if len(video_info) == 5:
+        series_name, season, episode, video_id, clip_title = video_info
+    else:
+        series_name, season, episode, video_id = video_info
+        clip_title = None
+
     session = requests.Session()  # Use a session to maintain cookies and headers
     response = session.get(BRIGHTCOVE_API(video_id), headers=BRIGHTCOVE_HEADERS).json()
     
@@ -219,7 +323,14 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
                 for key in keys:
                     print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                formatted_file_name = f"{series_name.title().replace('-', '.').replace(' ', '.').replace('_', '.').replace('/', '.').replace(':', '.')}.{season}{episode}.{max_height}p.9NOW.WEB-DL.AAC2.0.H.264"
+                
+                # Build safe base filename
+                base_name = series_name.title().replace('-', '.').replace(' ', '.').replace('_', '.').replace('/', '.').replace(':', '.')
+                if clip_title:
+                    formatted_file_name = f"{base_name}.{clip_title}.{season}{episode}.{max_height}p.9NOW.WEB-DL.AAC2.0.H.264"
+                else:
+                    formatted_file_name = f"{base_name}.{season}{episode}.{max_height}p.9NOW.WEB-DL.AAC2.0.H.264"
+
                 download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(keys)
                 print(download_command)
         else:
@@ -231,7 +342,14 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
                 # Print the download command for unencrypted videos
                 print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{m3u8_url}")
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                formatted_file_name = f"{series_name.title().replace('-', '.').replace(' ', '.').replace('_', '.').replace('/', '.').replace(':', '.')}.{season}{episode}.{max_height}p.9NOW.WEB-DL.AAC2.0.H.264"
+
+                # Build safe base filename
+                base_name = series_name.title().replace('-', '.').replace(' ', '.').replace('_', '.').replace('/', '.').replace(':', '.')
+                if clip_title:
+                    formatted_file_name = f"{base_name}.{clip_title}.{season}{episode}.{max_height}p.9NOW.WEB-DL.AAC2.0.H.264"
+                else:
+                    formatted_file_name = f"{base_name}.{season}{episode}.{max_height}p.9NOW.WEB-DL.AAC2.0.H.264"
+
                 download_command = f"""N_m3u8DL-RE "{m3u8_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
                 print(download_command)
             else:
@@ -243,6 +361,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
         user_input = input("Do you wish to download? Y or N: ").strip().lower()
         if user_input == 'y':
             subprocess.run(download_command, shell=True)
+
 
 # Main execution flow
 def main(video_url, downloads_path, wvd_device_path):
