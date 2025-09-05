@@ -104,7 +104,7 @@ def get_manifest(video_id):
     content = requests.get(url, headers=manifest_headers).json()
     if content and 'items' in content and content['items']:
         items = content['items'][0]
-        hls_url = requests.head(items.get("HLSURL"), allow_redirects=True, headers=manifest_headers).url # Follow redirects to get real URL
+        hls_url = requests.head(items.get("dashManifestUrl").replace("manifest=mpeg-dash", "manifest=m3u"), allow_redirects=True, headers=manifest_headers).url # Follow redirects to get real URL
         real_url = hls_url.replace(",150,", ",500,300,150,") # Replace bitrate for higher resolution
         return (real_url, manifest_headers)
     else:
