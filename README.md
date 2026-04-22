@@ -13,7 +13,7 @@
 - [x] Movies & TV-series
 - [x] Automatic PSSH, manifest, and key retreival 
 - [x] Option to add cookies where required (currently only 7Plus is required)
-- [x] Option to add login credentials where required (currently only 10Play and TVNZ is required)
+- [x] Option to add login credentials where required (10, SBS and TVNZ is required)
 - [x] [Supported sites] ABC iView, 7Plus, 9Now, 10Play, SBS on Demand, ThreeNow and TVNZ.
 
 ## Requirements:
@@ -56,6 +56,7 @@
       credentials:
         10play: username:password
         tvnz: username:password
+        sbs: username:password
 
 
 > [!TIP]
@@ -83,7 +84,7 @@ If a service requires cookies, you can use a browser extension to download cooki
 
 Firefox: https://addons.mozilla.org/addon/export-cookies-txt
 
-Chrome: https://chromewebstore.google.com/detail/open-cookiestxt/gdocmgbfkjnnpapoeobnolbbkoibbcif
+Chrome: https://chromewebstore.google.com/detail/get-cookiestxt-clean/ahmnmhfbokciafffnknlekllgcnafnie
 
 
 Name it `{service_name}.txt` and place it in service folder eg: SEVEN.txt
@@ -108,8 +109,8 @@ https://7plus.com.au
 https://www.9now.com.au
 
 
-10Play
-https://10play.com.au/
+10
+https://10.com.au/
 
 
 SBS On Demand
@@ -157,7 +158,7 @@ ABC iView, 9Now and SBS On Demand can be navigated without an account or login r
 
 7Plus requires cookies to function, so a free account with the service is required. Register an account and login before exporting any cookies file.
 
-10Play and TVNZ requires a login to function, so a free account with the service is required. Register an account and add your credentials to the config.yaml.
+10Play, SBS and TVNZ requires a login to function, so a free account with the service is required. Register an account and add your credentials to the config.yaml.
 
 ThreeNow requires a login to navigate the site, so a free account with the service is required.
 
@@ -177,6 +178,4 @@ Commands:
 
 1. This project is purely for educational purposes and does not condone piracy
 2. RSA key pair required for key derivation is not included in this project
-
-This project is licensed under the terms of the MIT license.
 

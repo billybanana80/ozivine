@@ -18,7 +18,7 @@ from datetime import datetime
 #   5. Note: this script functions for both encrypted and non-encrypted video files.
 
 console = Console()
-__version__ = "1.9"  # Replace with the actual version
+__version__ = "2.0"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
@@ -83,7 +83,7 @@ def main():
     elif video_url.startswith("https://www.sbs.com.au"):
         service_module = "services.sbs.sbs"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating SBS{bcolors.ENDC}")
-        args = (video_url, downloads_path)
+        args = (video_url, downloads_path, credentials.get("sbs"))
     elif video_url.startswith("https://iview.abc.net.au"):
         service_module = "services.abciview.abc"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ABC iView{bcolors.ENDC}")
