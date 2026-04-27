@@ -18,7 +18,7 @@ from datetime import datetime
 #   5. Note: this script functions for both encrypted and non-encrypted video files.
 
 console = Console()
-__version__ = "2.0"  # Replace with the actual version
+__version__ = "2.1"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
@@ -63,6 +63,8 @@ def main():
     wvd_device_path = config.get('wvd_device_path')
     cookies_path = config.get('cookies_path')
     credentials = config.get('credentials', {})
+    tvnz_config = config.get("tvnz", {})
+    tvnz_local_storage = tvnz_config.get("local_storage")
 
     # Check if a URL is provided as a command-line argument
     if len(sys.argv) > 1:
@@ -95,7 +97,12 @@ def main():
     elif video_url.startswith("https://www.tvnz.co.nz/"):
         service_module = "services.tvnz.tvnz"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating TVNZ{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, credentials.get("tvnz"))  
+
+        if not tvnz_local_storage:
+            print(f"{bcolors.RED}Missing config value: tvnz.local_storage{bcolors.ENDC}")
+            sys.exit(1)
+
+        args = (video_url, downloads_path, wvd_device_path, tvnz_local_storage) 
     elif video_url.startswith("https://www.threenow.co.nz"):
         service_module = "services.threenow.threenow"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ThreeNow{bcolors.ENDC}")

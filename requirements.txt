@@ -3,3 +3,4 @@ pywidevine
 lxml
 pyyaml
 rich
+PyJWT

@@ -130,22 +130,15 @@ def mask_value(value):
 # Login request
 def sbs_login(username, password):
     headers = {
-        "accept": "application/json",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "origin": "https://myaccount.sbs.com.au",
-        "referer": "https://myaccount.sbs.com.au/",
         "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/147.0.0.0 Safari/537.36"
+            "okhttp/4.10.0"
         ),
     }
 
     payload = {
         "email": username,
         "password": password,
-        "deviceName": "Chrome - Windows",
+        "deviceName": "Android TV",
     }
 
     response = requests.post(SBS_LOGIN_URL, headers=headers, json=payload, timeout=20)
@@ -212,23 +205,14 @@ def get_playback_data(video_id, access_token):
     url = SBS_PLAYBACK_URL.format(video_id=video_id)
 
     headers = {
-        "accept": "*/*",
-        "accept-language": "en",
         "authorization": f"Bearer {access_token}",
-        "cache-control": "no-cache",
-        "content-type": "application/json",
-        "origin": "https://www.sbs.com.au",
-        "pragma": "no-cache",
-        "referer": "https://www.sbs.com.au/",
         "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/147.0.0.0 Safari/537.36"
+            "okhttp/4.10.0"
         ),
     }
 
     payload = {
-        "deviceClass": "web",
+        "deviceClass": "androidtv",
         "advertising": {
             "headerBidding": True,
             "telariaID": "",

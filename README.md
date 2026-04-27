@@ -54,9 +54,11 @@
       cookies_path: "C:/Downloads/Ozivine/cookies/cookies.txt"
 
       credentials:
-        10play: username:password
-        tvnz: username:password
+        10play: username:password       
         sbs: username:password
+
+      tvnz:
+        local_storage: "D:/Downloads/CDM/local_storage.json"    
 
 
 > [!TIP]
@@ -148,7 +150,7 @@ https://10play.com.au/masterchef/episodes/season-16/episode-45/tpv240705dyovw
 https://www.threenow.co.nz/shows/thirst-with-shay-mitchell/season-1-ep-1/1718148621037/M86965-766
 
 
-https://www.tvnz.co.nz/shows/the-responder/episodes/s1-e6
+https://www.tvnz.co.nz/player/tvepisode/tauranga-hilltop
 
 
 
@@ -159,6 +161,23 @@ ABC iView, 9Now and SBS On Demand can be navigated without an account or login r
 7Plus requires cookies to function, so a free account with the service is required. Register an account and login before exporting any cookies file.
 
 10Play, SBS and TVNZ requires a login to function, so a free account with the service is required. Register an account and add your credentials to the config.yaml.
+
+Important:
+TVNZ no longer uses a username/password to authenticate your account. They are now using your browser's local storage, so they need to be extracted once before being cached for future use.
+It is recommneded to have a separate user account for this script and not share the same account with your browser as the sessions cannot be shared between the two.
+
+To extract your local storage details, in your browser press F12 to go to Dev Tools, go to the Console tab, paste in the below and hit enter
+
+Object.assign(document.createElement('a'), {
+  href: URL.createObjectURL(new Blob([JSON.stringify({
+    accessToken: localStorage.accessToken,
+    refreshToken: localStorage.refreshToken,
+    deviceref: localStorage.deviceref
+  }, null, 2)])),
+  download: 'local_storage.json'
+}).click();
+
+That will save a file named "local_storage.json" to your browser downloads folder.
 
 ThreeNow requires a login to navigate the site, so a free account with the service is required.
 
