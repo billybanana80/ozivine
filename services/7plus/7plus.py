@@ -21,7 +21,7 @@ from requests.adapters import HTTPAdapter
 #   Geo-Locking: requires an Australian IP address
 #   Quality: up to 720p
 #   Key Features:
-#   1. Extract Video ID: Parses the 7Plus URL to extract the series name, season, and episode number, and then fetches the Brightcove video ID from the 9Now API.
+#   1. Extract Video ID: Parses the 7Plus URL to extract the episode ID and then fetches the stream info from the 7Plus videoservice API.
 #   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
 #   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
 #   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
@@ -31,6 +31,7 @@ from requests.adapters import HTTPAdapter
 # Set DEBUG_ALL=True to re-enable ALL print() calls across this module.
 # Leave it False to silence everything except explicit _PRINT(...) calls below.
 import builtins
+
 DEBUG_ALL = False
 
 # Keep a handle to the real print
@@ -42,23 +43,12 @@ if not DEBUG_ALL:
         return
 # =============================================================================
 
-# Formatting for output
-class bcolors:
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    GREEN = '\033[92m'
-    ORANGE = '\033[38;5;208m'
+from helpers.colors import bcolors
 
 # URLs and Headers
 BASE_URL = "https://7plus.com.au"
 PLATFORM_VERSION = "1.0.106518"
+
 
 def _default_headers(referer_path="/", auth_token=None, conn_close=False):
     h = {
@@ -84,6 +74,7 @@ def _default_headers(referer_path="/", auth_token=None, conn_close=False):
         h["Authorization"] = f"Bearer {auth_token}"
     return h
 
+
 def _session_with_retries(total=3, backoff=0.5, pool_maxsize=20):
     s = requests.Session()
     retry = Retry(
@@ -100,6 +91,7 @@ def _session_with_retries(total=3, backoff=0.5, pool_maxsize=20):
     s.mount("https://", adapter)
     s.mount("http://", adapter)
     return s
+
 
 def get_authenticated_session(video_url, cookies_path):
     """
@@ -164,6 +156,7 @@ def get_authenticated_session(video_url, cookies_path):
 
     return session, auth_token
 
+
 def get_pssh(mpd_url):
     response = requests.get(mpd_url)
     if response.status_code != 200:
@@ -176,6 +169,7 @@ def get_pssh(mpd_url):
         return None
     return pssh_elements[0].text
 
+
 # Function to extract video details
 def extract_info(video_url, cookies_path, session=None, auth_token=None):
     # Ensure we have an authenticated session/token
@@ -184,7 +178,7 @@ def extract_info(video_url, cookies_path, session=None, auth_token=None):
 
     headers = _default_headers("/", auth_token)
 
-    # Playback endpoint + params 
+    # Playback endpoint + params
     media_url = 'https://videoservice.swm.digital/playback'
     path, episode_id = re.search(
         r'https?://(?:www\.)?7plus\.com\.au/(?P<path>[^?]+\?.*?\bepisode-id=(?P<id>[^&#]+))',
@@ -249,6 +243,7 @@ def extract_info(video_url, cookies_path, session=None, auth_token=None):
         print("No suitable source found for video")
         return None
 
+
 # Function to get decryption keys
 def get_keys(pssh, lic_url, wvd_device_path):
     try:
@@ -261,7 +256,7 @@ def get_keys(pssh, lic_url, wvd_device_path):
     cdm = Cdm.from_device(device)
     session_id = cdm.open()
     challenge = cdm.get_license_challenge(session_id, pssh)
-    
+
     headers = {
         'Content-Type': 'application/dash+xml',
         'Origin': 'https://7plus.com.au',
@@ -270,7 +265,7 @@ def get_keys(pssh, lic_url, wvd_device_path):
     }
 
     licence = requests.post(lic_url, headers=headers, data=challenge)
-    
+
     try:
         licence.raise_for_status()
     except requests.exceptions.HTTPError as e:
@@ -284,6 +279,7 @@ def get_keys(pssh, lic_url, wvd_device_path):
     cdm.close(session_id)
 
     return keys
+
 
 # Function to get the maximum video resolution from the MPD manifest
 def get_resolution_from_mpd(mpd_url):
@@ -302,6 +298,7 @@ def get_resolution_from_mpd(mpd_url):
     height = best_representation.attrib.get('height')
     return f"{height}p" if height else None
 
+
 # Function to get the maximum video resolution from the M3U8 manifest
 def get_resolution_from_m3u8(m3u8_url):
     response = requests.get(m3u8_url)
@@ -316,6 +313,7 @@ def get_resolution_from_m3u8(m3u8_url):
         return None
     best_resolution = max(resolutions, key=lambda r: int(r.split('x')[1]))
     return f"{best_resolution.split('x')[1]}p"
+
 
 # Function to format and display download command
 def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path):
@@ -345,7 +343,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             download_command = f"""N_m3u8DL-RE "{url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
             if keys:
                 download_command += " --key " + " --key ".join(keys)
-        
+
         # -- VISIBLE OUTPUT (encrypted MPD) -----------------------------------
         _PRINT(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{url}")
         _PRINT(f"{bcolors.RED}License URL: {bcolors.ENDC}{lic_url}")
@@ -355,7 +353,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
         _PRINT(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
         _PRINT(download_command)
         # ---------------------------------------------------------------------
-        
+
         user_input = input("Do you wish to download? Y or N: ").strip().lower()
         if user_input == 'y':
             subprocess.run(download_command, shell=True)
@@ -369,22 +367,23 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
                 formatted_file_name += f".{season_episode_tag}"
             formatted_file_name += f".{resolution}.7PLUS.WEB-DL.AAC2.0.H.264"
             download_command = f"""N_m3u8DL-RE "{url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
-            
+
             # -- VISIBLE OUTPUT (unencrypted m3u8) -----------------------------
             _PRINT(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{url}")
             _PRINT(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
             _PRINT(download_command)
             # ------------------------------------------------------------------
-            
+
             user_input = input("Do you wish to download? Y or N: ").strip().lower()
             if user_input == 'y':
                 subprocess.run(download_command, shell=True)
         else:
-            print(f"{bcolors.FAIL}Failed to retrieve necessary information for download{bcolors.ENDC}")       
+            print(f"{bcolors.FAIL}Failed to retrieve necessary information for download{bcolors.ENDC}")
 
-# Main logic
-def main(video_url, downloads_path, wvd_device_path, cookies_path): 
+        # Main logic
 
+
+def main(video_url, downloads_path, wvd_device_path, cookies_path):
     # 1) Probe playback (unchanged) — add progress around it
     print(f"{bcolors.OKBLUE}[STEP] Calling extract_info (videoservice)…{bcolors.ENDC}")
     info = extract_info(video_url, cookies_path)
@@ -417,7 +416,7 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
         return
     session.cookies = cookies
 
-    # Browser-y headers 
+    # Browser-y headers
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -534,4 +533,3 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
     # 10) Kick off download command (unchanged)
     print(f"{bcolors.OKBLUE}[STEP] Building download command…{bcolors.ENDC}")
     get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path)
-    

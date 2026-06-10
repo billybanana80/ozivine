@@ -6,6 +6,8 @@ from rich.padding import Padding
 from rich.text import Text
 from datetime import datetime
 
+from helpers.colors import bcolors
+
 #   Ozivine: Downloader for Australian & New Zealand FTA services
 #   Author: billybanana
 #   Quality: up to 1080p
@@ -20,6 +22,7 @@ from datetime import datetime
 console = Console()
 __version__ = "2.1"  # Replace with the actual version
 
+
 def print_ascii_art(version=None):
     ascii_art = Text(
         r"          _       _            " + "\n"
@@ -28,7 +31,7 @@ def print_ascii_art(version=None):
         r"| (_) / /| |\ V /| | | | |  __/ " + "\n"
         r" \___/___|_| \_/ |_|_| |_|\___| " + "\n"
         r"                               ",
-        
+
     )
 
     version_info = Text(f"Version {__version__} Copyright © {datetime.now().year} billybanana", style="none")
@@ -41,19 +44,12 @@ def print_ascii_art(version=None):
 
     if version:
         return
-    
-# Define color formatting
-class bcolors:
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    ENDC = '\033[0m'
-    ORANGE = '\033[38;5;208m'
+
 
 def load_config():
     with open('config.yaml', 'r') as file:
         return yaml.safe_load(file)
+
 
 def main():
     print_ascii_art(version=__version__)  # Display the ASCII art and version info
@@ -93,7 +89,7 @@ def main():
     elif video_url.startswith(("https://10play.com.au/", "https://10.com.au/")):
         service_module = "services.10play.10play"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 10{bcolors.ENDC}")
-        args = (video_url, downloads_path, credentials.get("10play")) 
+        args = (video_url, downloads_path, credentials.get("10play"))
     elif video_url.startswith("https://www.tvnz.co.nz/"):
         service_module = "services.tvnz.tvnz"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating TVNZ{bcolors.ENDC}")
@@ -102,11 +98,11 @@ def main():
             print(f"{bcolors.RED}Missing config value: tvnz.local_storage{bcolors.ENDC}")
             sys.exit(1)
 
-        args = (video_url, downloads_path, wvd_device_path, tvnz_local_storage) 
+        args = (video_url, downloads_path, wvd_device_path, tvnz_local_storage)
     elif video_url.startswith("https://www.threenow.co.nz"):
         service_module = "services.threenow.threenow"
         print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ThreeNow{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path)                      
+        args = (video_url, downloads_path, wvd_device_path)
     else:
         print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, ABC iView, ThreeNow or TVNZ.{bcolors.ENDC}")
         sys.exit(1)
@@ -116,6 +112,7 @@ def main():
         service.main(*args)
     except Exception as e:
         print(f"{bcolors.RED}Error importing or running the service module: {e}{bcolors.ENDC}")
+
 
 if __name__ == "__main__":
     main()

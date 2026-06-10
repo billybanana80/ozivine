@@ -41,25 +41,21 @@
 4. Create `/wvd/` folder and place .wvd file in folder (or specify the path to your existing *.wvd as below)
 5. Install necessary packages: `pip install -r requirements.txt`
 6. Config: 
-      -specify your Downloads path in the config.yaml (optional)
+      -specify your Downloads path in the `config.yaml` (optional)
 
-      -specify your path to *.wvd file in the config.yaml (mandatory)
+      -specify your path to *.wvd file in the `config.yaml` (mandatory)
 
-      Sample config.yaml file to confirm format
-
+      Sample `config.yaml` file to confirm the format:
+      ```yaml  
       downloads_path: "C:/Downloads/"
-   
       wvd_device_path: "C:/Downloads/Ozivine/wvd/l3.wvd"
-   
       cookies_path: "C:/Downloads/Ozivine/cookies/cookies.txt"
-
       credentials:
         10play: username:password       
         sbs: username:password
-
       tvnz:
         local_storage: "D:/Downloads/CDM/local_storage.json"    
-
+      ```
 
 > [!TIP]
 > Clone the main branch to always stay up to date:
@@ -168,6 +164,7 @@ It is recommneded to have a separate user account for this script and not share 
 
 To extract your local storage details, in your browser press F12 to go to Dev Tools, go to the Console tab, paste in the below and hit enter
 
+```javascript
 Object.assign(document.createElement('a'), {
   href: URL.createObjectURL(new Blob([JSON.stringify({
     accessToken: localStorage.accessToken,
@@ -176,6 +173,7 @@ Object.assign(document.createElement('a'), {
   }, null, 2)])),
   download: 'local_storage.json'
 }).click();
+```
 
 That will save a file named "local_storage.json" to your browser downloads folder.
 

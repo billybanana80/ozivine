@@ -1,10 +1,15 @@
 import requests
 import re
+import os
 import base64
 import binascii
 import subprocess
 from xml.etree import ElementTree as ET
 from pywidevine import Cdm, Device, PSSH
+
+from helpers.colors import bcolors
+from helpers.subtitles import sanitize_filename, describe, embed_subtitles
+
 
 #   Ozivine: ABC iView Video Downloader
 #   Author: billybanana
@@ -20,18 +25,10 @@ from pywidevine import Cdm, Device, PSSH
 #   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
 #   5. Note: this script functions for encrypted video files only (ABC iView files are all currently encrypted).
 
-# Define color formatting
-class bcolors:
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    ENDC = '\033[0m'
-    ORANGE = '\033[38;5;208m'
-
 def get_video_id(url):
     match = re.search(r'video/([A-Z0-9]+)', url)
     return match.group(1) if match else None
+
 
 def get_jwt_token(client_id, jwt_url):
     headers = {
@@ -42,6 +39,7 @@ def get_jwt_token(client_id, jwt_url):
         return response.json().get("token")
     else:
         return None
+
 
 def get_license_data(video_id, drm_url, jwt_token):
     headers = {
@@ -58,6 +56,7 @@ def get_license_data(video_id, drm_url, jwt_token):
             return None, None
     else:
         return None, None
+
 
 # Function to get 1080p MPD URL
 def get_mpd_url(video_id):
@@ -76,6 +75,7 @@ def get_mpd_url(video_id):
     else:
         return None
 
+
 # Function to get PSSH from MPD URL
 def extract_pssh(mpd_url):
     response = requests.get(mpd_url)
@@ -88,6 +88,7 @@ def extract_pssh(mpd_url):
                 return pssh
     return None
 
+
 # Function to get the show information for file name formatting
 def get_show_info(video_id):
     show_info_url = f'https://api.iview.abc.net.au/v3/video/{video_id}'
@@ -97,7 +98,7 @@ def get_show_info(video_id):
         show_title = data.get("showTitle", "UnknownShow").replace(" ", ".")
         title = data.get("title", "")
         status_title = data.get("status", {}).get("title", "")
-        
+
         if status_title == "MOVIE":
             formatted_title = f"{show_title}.1080p.ABCiView.WEB-DL.AAC2.0.H.264"
         else:
@@ -108,8 +109,39 @@ def get_show_info(video_id):
                 formatted_title = f"{show_title}.S{season}E{episode}.1080p.ABCiView.WEB-DL.AAC2.0.H.264"
             else:
                 formatted_title = f"{show_title}.{title.replace(' ', '.')}.1080p.ABCiView.WEB-DL.AAC2.0.H.264"
-        return formatted_title
+        return sanitize_filename(formatted_title)
     return "video"
+
+
+# Function to collect the English caption sidecar (WebVTT).
+# ABC iView does not put captions in the MPD; the programme's playlist entry
+# exposes them as captions["src-vtt"]. (preroll/rating entries have no captions.)
+def collect_subtitles(video_id):
+    api_url = f'https://api.iview.abc.net.au/v3/video/{video_id}'
+    try:
+        response = requests.get(api_url)
+        response.raise_for_status()
+    except requests.RequestException:
+        return []
+
+    playlist = response.json().get("_embedded", {}).get("playlist", [])
+    program = next((p for p in playlist if p.get("type") == "program"), None)
+    if not program:
+        return []
+
+    captions = program.get("captions") or {}
+    url = captions.get("src-vtt")
+    if not url or str(captions.get("live", "0")) == "1":
+        return []
+
+    return [{
+        "url": url,
+        "lang": "en",
+        "name": "English",
+        "default": True,
+        "forced": False,
+    }]
+
 
 # Function to get keys using PSSH and license URL
 def get_license(pssh, video_id, client_id, jwt_url, drm_url, wvd_device_path):
@@ -156,11 +188,13 @@ def get_license(pssh, video_id, client_id, jwt_url, drm_url, wvd_device_path):
     else:
         return None
 
+
 def format_keys(keys):
     formatted_keys = []
     for key in keys:
         formatted_keys.append(f"{key.kid.hex}:{key.key.hex()}")
     return formatted_keys
+
 
 # Main execution flow
 def main(video_url, downloads_path, wvd_device_path):
@@ -179,21 +213,31 @@ def main(video_url, downloads_path, wvd_device_path):
                     formatted_keys = format_keys(license_keys)
                     # Get formatted file name
                     formatted_file_name = get_show_info(video_id)
-                    
+                    # Get the English caption sidecar (not present in the MPD)
+                    captions = collect_subtitles(video_id)
+
                     # Print the requested information
                     print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{mpd_url}")
                     print(f"{bcolors.RED}License URL: {bcolors.ENDC}https://wv-keyos.licensekeyserver.com/")
                     print(f"{bcolors.LIGHTBLUE}PSSH: {bcolors.ENDC}{pssh}")
                     for key in formatted_keys:
                         print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
+                    if captions:
+                        print(f"{bcolors.LIGHTBLUE}Subtitles to embed: {bcolors.ENDC}{describe(captions)}")
+                    else:
+                        print(f"{bcolors.YELLOW}No subtitles available for this title.{bcolors.ENDC}")
                     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                    download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video res=1080 --select-audio all --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(formatted_keys)
+                    # Subtitles are handled separately (downloaded + muxed below); ABC
+                    # does not put them in the MPD, so no --select-subtitle flag here.
+                    download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video res=1080 --select-audio all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(
+                        formatted_keys)
                     print(download_command)
-                    
-                    if download_command:
-                        user_input = input("Do you wish to download? Y or N: ").strip().lower()
-                        if user_input == 'y':
-                            subprocess.run(download_command, shell=True)
+
+                    user_input = input("Do you wish to download? Y or N: ").strip().lower()
+                    if user_input == 'y':
+                        subprocess.run(download_command, shell=True)
+                        if captions:
+                            embed_subtitles(downloads_path, formatted_file_name, captions)
                 else:
                     print("Failed to get license keys")
             else:

@@ -7,6 +7,9 @@ from datetime import datetime, timedelta, timezone
 import requests
 import yaml
 
+from helpers.colors import bcolors
+from helpers.subtitles import sanitize_filename, describe, embed_subtitles
+
 #   Ozivine: SBS On Demand Video Downloader
 #   Author: billybanana
 #   Usage: enter the series/season/episode URL to retrieve the m3u8 Manifest.
@@ -26,6 +29,10 @@ SBS_PLAYBACK_URL = "https://playback.pr.sbsod.com/stream/{video_id}"
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "config.yaml")
 CONFIG_PATH = os.path.abspath(CONFIG_PATH)
 
+# Subtitle behaviour: True downloads only English tracks (English / English CC),
+# False downloads every subtitle track SBS offers (Arabic, Korean, Vietnamese, etc).
+ENGLISH_ONLY = True
+
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
@@ -39,20 +46,6 @@ def save_config(config):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
 
-# ANSI escape codes for colors
-class bcolors:
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    GREEN = '\033[92m'
-    ORANGE = '\033[38;5;208m'
-
 
 # Check for cached token
 def ensure_sbs_cache(config):
@@ -61,6 +54,7 @@ def ensure_sbs_cache(config):
     config["sbs"].setdefault("cache", {})
     config["sbs"]["cache"].setdefault("login", {})
     return config
+
 
 # Obtain login credentials from config
 def parse_sbs_credentials(credentials):
@@ -89,6 +83,7 @@ def parse_iso_datetime(value):
     except Exception:
         return None
 
+
 # Define token expiry
 def jwt_expiry_utc(token):
     try:
@@ -106,6 +101,7 @@ def jwt_expiry_utc(token):
         return datetime.fromtimestamp(exp, tz=timezone.utc)
     except Exception:
         return None
+
 
 # Check if token is valid
 def token_is_valid(token, expiry, buffer_minutes=5):
@@ -126,6 +122,7 @@ def mask_value(value):
     if len(value) <= 20:
         return value
     return f"{value[:10]}...{value[-10:]}"
+
 
 # Login request
 def sbs_login(username, password):
@@ -169,7 +166,8 @@ def sbs_login(username, password):
         "expiry": expiry_dt.isoformat() if expiry_dt else "",
     }
 
-# Function to retrieve access toekn
+
+# Function to retrieve access token
 def get_sbs_access_token(config, credentials):
     config = ensure_sbs_cache(config)
     cache = config["sbs"]["cache"]["login"]
@@ -195,10 +193,12 @@ def get_sbs_access_token(config, credentials):
     print(f"{bcolors.OKGREEN}✅ Token cache updated{bcolors.ENDC}")
     return login_data["token"]
 
+
 # Function to extract video ID from URL
 def extract_video_id(video_url):
     match = re.search(r"/(\d+)", video_url)
     return match.group(1) if match else None
+
 
 # Function to get show information from playback catalogue
 def get_playback_data(video_id, access_token):
@@ -240,12 +240,41 @@ def get_playback_data(video_id, access_token):
     except Exception as e:
         raise RuntimeError(f"Playback endpoint did not return valid JSON: {e}")
 
-# Function to get manifest URL
-def find_hls_url(playback_data):
+
+# Function to get the HLS stream provider (carries both the manifest URL and the
+# subtitle track list).
+def find_hls_provider(playback_data):
     for provider in playback_data.get("streamProviders", []):
         if provider.get("type") == "HLS" and provider.get("url"):
-            return provider["url"]
+            return provider
     return None
+
+
+# Function to collect the wanted subtitle tracks from the playback data.
+# SBS does not put subtitles in the HLS manifest; it returns them as a "textTracks"
+# list on the HLS stream provider. Each row looks like:
+#   {"name": "English (CC)", "type": "CAPTION"/"SUBTITLE", "url": "...VTT",
+#    "lang": "en", "format": "WebVTT", "attributes": ["AUTOSELECT=YES", "DEFAULT=YES"]}
+def collect_subtitles(provider, english_only=True):
+    subs = []
+    for row in provider.get("textTracks", []) or []:
+        url = row.get("url")
+        lang = (row.get("lang") or "und").strip()
+        if not url:
+            continue
+        if english_only and not lang.lower().startswith("en"):
+            continue
+        # Attributes are HLS-style KEY=VALUE strings, e.g. "DEFAULT=YES".
+        attribs = [str(a).upper() for a in row.get("attributes", [])]
+        subs.append({
+            "url": url,
+            "lang": lang,
+            "name": (row.get("name") or "").strip(),
+            "default": "DEFAULT=YES" in attribs,
+            "forced": "FORCED=YES" in attribs,
+        })
+    return subs
+
 
 # Function to get max resolution from manifest
 def get_max_height_m3u8(url_m3u8):
@@ -265,6 +294,7 @@ def get_max_height_m3u8(url_m3u8):
         print(f"Error fetching max height from m3u8: {e}")
         return 0
 
+
 # Function to build the video file name
 def build_filename(playback_data, video_height):
     entity_type = playback_data.get("entityType", "")
@@ -276,52 +306,68 @@ def build_filename(playback_data, video_height):
     resolution_tag = f"{video_height or 720}p"
 
     if entity_type == "MOVIE" or not series_title:
-        return f"{title}.{resolution_tag}.SBS.WEB-DL.AAC2.0.H.264"
+        name = f"{title}.{resolution_tag}.SBS.WEB-DL.AAC2.0.H.264"
+    else:
+        name = f"{series_title}.S{season_number}E{episode_number}.{title}.{resolution_tag}.SBS.WEB-DL.AAC2.0.H.264"
 
-    return f"{series_title}.S{season_number}E{episode_number}.{title}.{resolution_tag}.SBS.WEB-DL.AAC2.0.H.264"
+    return sanitize_filename(name)
+
 
 # Function to extract and print m3u8 URL
 def extract_info(video_url, access_token):
     video_id = extract_video_id(video_url)
     if not video_id:
         print("Failed to extract video ID from the URL.")
-        return None, None
+        return None, None, []
 
     playback_data = get_playback_data(video_id, access_token)
 
-    manifest_url = find_hls_url(playback_data)
-    if not manifest_url:
+    provider = find_hls_provider(playback_data)
+    if not provider:
         print("No HLS manifest URL found in playback data.")
         print(json.dumps(playback_data, indent=2)[:4000])
-        return None, None
+        return None, None, []
+
+    manifest_url = provider["url"]
+    subtitles = collect_subtitles(provider, english_only=ENGLISH_ONLY)
 
     video_height = get_max_height_m3u8(manifest_url)
     formatted_file_name = build_filename(playback_data, video_height)
-    return manifest_url, formatted_file_name
+    return manifest_url, formatted_file_name, subtitles
+
 
 # Function to format and display download command
-def display_download_command(manifest_url, formatted_file_name, downloads_path):
+def display_download_command(manifest_url, formatted_file_name, downloads_path, subtitles):
+    # Subtitles are handled separately (downloaded + muxed below); SBS does not put
+    # them in the HLS manifest, so no --select-subtitle flag is needed here.
     download_command = (
         f'N_m3u8DL-RE "{manifest_url}" '
-        f'--select-video best --select-audio best --select-subtitle all '
+        f'--select-video best --select-audio best '
         f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}"'
     )
 
     print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
+    if subtitles:
+        print(f"{bcolors.OKCYAN}Subtitles to embed: {bcolors.ENDC}{describe(subtitles)}")
+    else:
+        print(f"{bcolors.WARNING}No subtitles available for this title.{bcolors.ENDC}")
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
     print(download_command)
 
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == "y":
         subprocess.run(download_command, shell=True)
+        if subtitles:
+            embed_subtitles(downloads_path, formatted_file_name, subtitles)
+
 
 # Main function
 def main(video_url, downloads_path, credentials):
     config = load_config()
     access_token = get_sbs_access_token(config, credentials)
 
-    manifest_url, formatted_file_name = extract_info(video_url, access_token)
+    manifest_url, formatted_file_name, subtitles = extract_info(video_url, access_token)
     if not manifest_url:
         return
 
-    display_download_command(manifest_url, formatted_file_name, downloads_path)
+    display_download_command(manifest_url, formatted_file_name, downloads_path, subtitles)

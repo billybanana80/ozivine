@@ -17,6 +17,8 @@ from pywidevine.cdm import Cdm
 from pywidevine.device import Device
 from pywidevine.pssh import PSSH
 
+from helpers.colors import bcolors
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 #   Ozivine: TVNZ Video Downloader
@@ -73,15 +75,6 @@ CATALOG_PARAMS = {
     "pf": "Regular",
     "allowpg": "true",
 }
-
-class bcolors:
-    OKGREEN = "\033[92m"
-    LIGHTBLUE = "\033[94m"
-    RED = "\033[91m"
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    FAIL = "\033[91m"
-    ENDC = "\033[0m"
 
 
 def first_name(value):
