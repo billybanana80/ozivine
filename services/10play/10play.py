@@ -5,7 +5,7 @@ import subprocess
 import re
 import os
 import random
-from urllib.parse import urljoin  
+from urllib.parse import urljoin
 
 #   Ozivine: 10Play Video Downloader
 #   Author: billybanana
@@ -19,20 +19,9 @@ from urllib.parse import urljoin
 #   2. Print Download Information: Outputs the M3U8 URL required for downloading the video content.
 #   3. Note: this script functions for AES_128 encrypted video files only.
 
-# Formatting for output
-class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    LIGHTBLUE = '\033[94m'
-    YELLOW = '\033[93m'
-    ORANGE = '\033[93m'
+from helpers.colors import bcolors
+from helpers.subtitles import embed_subtitles
+
 
 ### Helpers ###
 
@@ -43,17 +32,6 @@ def fetch_text(url, timeout=15):
     r.raise_for_status()
     return r.text
 
-def get_first_segment_url(media_m3u8_text: str, media_m3u8_url: str) -> str | None:
-    """
-    Return absolute URL of the first segment in a media playlist.
-    """
-    for line in media_m3u8_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        # First non-tag line is a segment URI
-        return urljoin(media_m3u8_url, line)
-    return None
 
 def _extract_segment_urls(media_m3u8_text: str, media_m3u8_url: str):
     segs = []
@@ -63,6 +41,7 @@ def _extract_segment_urls(media_m3u8_text: str, media_m3u8_url: str):
             continue
         segs.append(urljoin(media_m3u8_url, s))
     return segs
+
 
 def _tiny_get_ok(url: str, timeout=8) -> bool:
     try:
@@ -77,6 +56,7 @@ def _tiny_get_ok(url: str, timeout=8) -> bool:
         return r.status_code in (200, 206)
     except Exception:
         return False
+
 
 def probe_segment_ok(m3u8_source: str, timeout=10) -> bool:
     """
@@ -111,6 +91,7 @@ def probe_segment_ok(m3u8_source: str, timeout=10) -> bool:
     except Exception:
         return False
 
+
 def parse_master_variants(master_text: str, master_url: str):
     """
     Parse a master playlist; return list of dicts with height and absolute URL.
@@ -134,6 +115,7 @@ def parse_master_variants(master_text: str, master_url: str):
     variants.sort(key=lambda v: v["height"], reverse=True)
     return variants
 
+
 def pick_best_variant(master_url: str) -> tuple[str, int] | tuple[None, None]:
     """
     Return (variant_url, height) for the best available rendition.
@@ -148,6 +130,7 @@ def pick_best_variant(master_url: str) -> tuple[str, int] | tuple[None, None]:
     except Exception:
         return None, None
 
+
 def replace_resolution_tag(save_name: str, new_height: int) -> str:
     """
     Replace .1080p. (or any .####p.) in the save-name with the detected height.
@@ -159,7 +142,8 @@ def replace_resolution_tag(save_name: str, new_height: int) -> str:
         return re.sub(r"\.(\d{3,4})p\.", f".{new_height}p.", save_name, count=1)
     # try to insert before ".10Play." or at end
     return re.sub(r"(\.10Play\.)", f".{new_height}p.\\1", save_name, count=1) \
-           if ".10Play." in save_name else f"{save_name}.{new_height}p"
+        if ".10Play." in save_name else f"{save_name}.{new_height}p"
+
 
 ### End of Helpers ###
 
@@ -172,6 +156,7 @@ headers = {
     'Origin': 'https://10play.com.au',
     'Referer': 'https://10play.com.au/'
 }
+
 
 # Function to get bearer token
 def get_bearer_token(username, password):
@@ -211,7 +196,7 @@ def extract_video_details(video_id, token, episode_url):
     # include tp-acceptfeature + bearer
     auth_headers = _build_auth_headers(token)
 
-    # 1) Get the video doc 
+    # 1) Get the video doc
     response = requests.get(video_api_url, headers=auth_headers, timeout=20)
     if response.status_code != 200:
         print(f"{bcolors.FAIL}Failed to fetch video details ({response.status_code}){bcolors.ENDC}")
@@ -219,7 +204,7 @@ def extract_video_details(video_id, token, episode_url):
 
     video_data = response.json()
 
-    # 2) Playback endpoint 
+    # 2) Playback endpoint
     playback_url = f"https://10play.com.au/api/v1/videos/playback/{video_id}?platform=tizen"
     playback_response = requests.get(playback_url, headers=auth_headers, timeout=20)
     if playback_response.status_code != 200:
@@ -258,7 +243,7 @@ def extract_video_details(video_id, token, episode_url):
     return None, None
 
 
-# Function to retrieve stream manifest URL 
+# Function to retrieve stream manifest URL
 def get_stream_manifest(content_source_id, video_id, dai_auth_token, episode_url):
     """
     Google DAI streams endpoint.
@@ -274,10 +259,10 @@ def get_stream_manifest(content_source_id, video_id, dai_auth_token, episode_url
     form = {
         "cmsid": content_source_id,
         "vid": video_id,
-        "auth-token": dai_auth_token,                         # REQUIRED
-        "url": episode_url,                                   
-        "ua": ua,                                             
-        "correlator": str(random.randint(10**12, 10**16)),    
+        "auth-token": dai_auth_token,  # REQUIRED
+        "url": episode_url,
+        "ua": ua,
+        "correlator": str(random.randint(10 ** 12, 10 ** 16)),
     }
     stream_headers = {
         "User-Agent": ua,
@@ -298,7 +283,7 @@ def get_stream_manifest(content_source_id, video_id, dai_auth_token, episode_url
 
     # Sometimes DAI returns an m3u8 directly
     if "application/vnd.apple.mpegurl" in ctype or text.startswith("#EXTM3U"):
-        return response.url 
+        return response.url
 
         # Or JSON that includes stream URLs
     if "application/json" in ctype:
@@ -310,9 +295,9 @@ def get_stream_manifest(content_source_id, video_id, dai_auth_token, episode_url
 
         # Prefer direct manifest fields the DAI API returns
         direct = (
-            data.get("stream_manifest")
-            or data.get("manifest")
-            or data.get("url")
+                data.get("stream_manifest")
+                or data.get("manifest")
+                or data.get("url")
         )
         if isinstance(direct, str) and direct.startswith("http"):
             return direct
@@ -344,6 +329,7 @@ def download_and_select_variant(manifest_url):
     else:
         print(f"{bcolors.FAIL}Failed to download manifest: {response.status_code}{bcolors.ENDC}")
         return None
+
 
 # Function to modify the variant M3U8 content and save with proper filename
 def modify_and_save_m3u8(variant_url, downloads_path):
@@ -384,20 +370,45 @@ def format_file_name(video_data):
         episode = int(video_data['episode'])
         season_episode_tag = f"S{season:02d}E{episode:02d}"
         formatted_file_name = f"{show_name}.{season_episode_tag}.1080p.10Play.WEB-DL.AAC2.0.H.264"
-    
+
     return formatted_file_name
 
+
+# Function to collect the subtitle playlist URI from the master manifest.
+# The subtitle track is declared only in the master as an EXT-X-MEDIA SUBTITLES
+# entry with a URI pointing to a segmented WebVTT playlist. Higher-quality variant
+# playlists omit this declaration entirely. ffmpeg (via embed_subtitles) fetches
+# the playlist URL directly and concatenates all segments into an SRT.
+def collect_subtitles(master_url):
+    try:
+        text = fetch_text(master_url)
+    except Exception as e:
+        print(f"{bcolors.WARNING}Could not fetch master for subtitle URI: {e}{bcolors.ENDC}")
+        return None
+
+    for line in text.splitlines():
+        if 'EXT-X-MEDIA' not in line:
+            continue
+        if 'TYPE=SUBTITLES' not in line and 'TYPE=CLOSED-CAPTIONS' not in line:
+            continue
+        uri_m = re.search(r'URI="([^"]+)"', line)
+        if uri_m:
+            return uri_m.group(1)
+    return None
+
+
 # Function to format and display download command
-def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url):
-    use_source = m3u8_file_path   # default to local file
+def display_download_command(m3u8_file_path, formatted_file_name, downloads_path,
+                             master_m3u8_url):
+    use_source = m3u8_file_path
     final_save_name = formatted_file_name
 
     print(f"{bcolors.LIGHTBLUE}FHD M3U8 File: {bcolors.ENDC}{m3u8_file_path}")
 
-    # Pre-flight probe: if it looks bad, pre-switch to master best
+    # Pre-flight probe: if segments look bad, fall back to best from master.
     preflight_failed = not probe_segment_ok(m3u8_file_path)
     if preflight_failed:
-        print(f"{bcolors.WARNING}First/middle/end segment probe failed — falling back to best available from master.{bcolors.ENDC}")
+        print(f"{bcolors.WARNING}Segment probe failed — falling back to best available from master.{bcolors.ENDC}")
         best_url, best_h = pick_best_variant(master_m3u8_url)
         if best_url:
             use_source = best_url
@@ -408,11 +419,19 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
         else:
             print(f"{bcolors.FAIL}Could not pick a fallback variant from master.{bcolors.ENDC}")
 
-    # Build command
+    # The subtitle track is a segmented WebVTT playlist declared only on the master.
+    # ffmpeg (via embed_subtitles) fetches the playlist URL directly, concatenates
+    # all segments into an SRT, and mkvmerge embeds it — same pipeline as ABC/SBS.
+    subtitle_uri = collect_subtitles(master_m3u8_url)
+    if subtitle_uri:
+        print(f"{bcolors.OKCYAN}Subtitle playlist found{bcolors.ENDC}")
+    else:
+        print(f"{bcolors.WARNING}No subtitle playlist found in master.{bcolors.ENDC}")
+
     download_command = (
         f'N_m3u8DL-RE "{use_source}" '
         f'--ad-keyword redirector.googlevideo.com '
-        f'--select-video best --select-audio best --select-subtitle all '
+        f'--select-video best --select-audio best '
         f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{final_save_name}"'
     )
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
@@ -420,10 +439,8 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
 
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == 'y':
-        # First attempt
         result = subprocess.run(download_command, shell=True)
         if result.returncode != 0 and not preflight_failed:
-            # Runtime fallback: if we *thought* the playlist was fine but the tool failed (404, etc.)
             print(f"{bcolors.WARNING}Downloader failed; attempting fallback from master...{bcolors.ENDC}")
             best_url, best_h = pick_best_variant(master_m3u8_url)
             if best_url:
@@ -431,14 +448,24 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
                 fb_cmd = (
                     f'N_m3u8DL-RE "{best_url}" '
                     f'--ad-keyword redirector.googlevideo.com '
-                    f'--select-video best --select-audio best --select-subtitle all '
+                    f'--select-video best --select-audio best '
                     f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{fallback_save}"'
                 )
                 print(f"{bcolors.YELLOW}FALLBACK DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(fb_cmd)
-                subprocess.run(fb_cmd, shell=True)
+                result = subprocess.run(fb_cmd, shell=True)
+                final_save_name = fallback_save
             else:
                 print(f"{bcolors.FAIL}Fallback failed: could not parse master playlist.{bcolors.ENDC}")
+
+        if result.returncode == 0 and subtitle_uri:
+            embed_subtitles(downloads_path, final_save_name, [{
+                "url": subtitle_uri,
+                "lang": "en",
+                "name": "English",
+                "default": True,
+                "forced": False,
+            }])
 
     # Always delete local .m3u8
     if os.path.exists(m3u8_file_path):
@@ -454,11 +481,12 @@ def extract_video_id(url):
     match = re.search(r'/([^/]+)/?$', url)
     return match.group(1) if match else None
 
+
 # Main logic
 def main(video_url, downloads_path, credentials):
     username, password = credentials.split(':')
     video_id = extract_video_id(video_url)
-    
+
     if not video_id:
         print(f"{bcolors.FAIL}Invalid URL. Please enter a valid 10Play video URL.{bcolors.ENDC}")
         return
@@ -470,14 +498,13 @@ def main(video_url, downloads_path, credentials):
         if manifest_url and video_data:
             variant_url = download_and_select_variant(manifest_url)
             if variant_url:
-                local_m3u8_file, original_variant_url = modify_and_save_m3u8(variant_url, downloads_path)
+                local_m3u8_file, variant_540_url = modify_and_save_m3u8(variant_url, downloads_path)
                 if local_m3u8_file:
-                    # Print the original 960x540 URL and the local path
                     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{manifest_url}")
-                    print(f"{bcolors.LIGHTBLUE}SD M3U8 URL: {bcolors.ENDC}{original_variant_url}")
-                    
+                    print(f"{bcolors.LIGHTBLUE}SD M3U8 URL: {bcolors.ENDC}{variant_540_url}")
                     formatted_file_name = format_file_name(video_data)
-                    display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url)
+                    display_download_command(local_m3u8_file, formatted_file_name,
+                                             downloads_path, manifest_url)
                 else:
                     print(f"{bcolors.FAIL}Failed to modify and save the variant M3U8{bcolors.ENDC}")
             else:
