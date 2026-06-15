@@ -654,7 +654,7 @@ def get_download_command(video_url):
 
     download_command = (
         f'N_m3u8DL-RE "{mpd_url}" '
-        f'--select-video best --select-audio best --select-subtitle all '
+        f'--select-video best --select-audio best -da role="Description" --select-subtitle all '
         f'-mt -M format=mkv '
         f'--save-name "{formatted_file_name}" '
         f'--save-dir "{DOWNLOAD_DIR}" '
