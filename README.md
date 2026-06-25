@@ -1,173 +1,282 @@
 <h3 align="center">Ozivine<br/>
 <sup>A Download Utility for Free Australian & NZ Streaming Services</sup></h3>
+
 <p align="center">
     <a href="https://python.org">
         <img src="https://img.shields.io/badge/python-3.9+-blue" alt="Python version">
     </a>
     <a href="https://docs.python.org/3/library/venv.html">
         <img src="https://img.shields.io/badge/python-venv-blue" alt="Python virtual environments">
+    </a>
 </p>
 
-## Features:
+## Features
 
-- [x] Movies & TV-series
-- [x] Automatic PSSH, manifest, and key retreival 
-- [x] Option to add cookies where required (currently only 7Plus is required)
-- [x] Option to add login credentials where required (10, SBS and TVNZ is required)
-- [x] [Supported sites] ABC iView, 7Plus, 9Now, 10Play, SBS on Demand, ThreeNow and TVNZ.
+- [x] Movies and TV series
+- [x] Automatic PSSH, manifest, and key retrieval
+- [x] Cookie support where required
+- [x] Login credential support where required
+- [x] Optional proxy support for Australian and New Zealand services
+- [x] Supported sites: ABC iView, 7Plus, 9Now, 10Play, SBS On Demand, ThreeNow, and TVNZ
 
-## Requirements:
+## Requirements
 
-* [Python](https://www.python.org/)
-
-* [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE/releases/)
-
-* [ffmpeg](https://ffmpeg.org/)
-
-* [mkvmerge](https://mkvtoolnix.download/downloads.html)
-
-* [mp4decrypt](https://www.bento4.com/downloads/)
-
-* Valid Widevine CDM (this is not included, so don't ask)
+- [Python](https://www.python.org/)
+- [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE/releases/)
+- [ffmpeg](https://ffmpeg.org/)
+- [mkvmerge](https://mkvtoolnix.download/downloads.html)
+- [mp4decrypt](https://www.bento4.com/downloads/)
+- Valid Widevine CDM. This is not included.
 
 > [!TIP]
-> Windows users are recommended to use Powershell 7 in Windows Terminal for best experience
+> Windows users are recommended to use PowerShell 7 in Windows Terminal for the best experience.
 
-## Installation:
+## Installation
 
-1. Install Python (check 'Add to PATH' if on Windows)
-2. Clone main branch or download latest version from [Releases](https://github.com/billybanana80/ozivine/releases)
-3. Place required tools inside Ozivine folder OR add them to system PATH (recommended)
-4. Create `/wvd/` folder and place .wvd file in folder (or specify the path to your existing *.wvd as below)
-5. Install necessary packages: `pip install -r requirements.txt`
-6. Config: 
-      -specify your Downloads path in the config.yaml (optional)
+1. Install Python. On Windows, tick **Add to PATH** during installation.
+2. Clone the main branch or download the latest version from [Releases](https://github.com/billybanana80/ozivine/releases).
+3. Place required tools inside the Ozivine folder, or add them to your system PATH.
+4. Create a `wvd` folder and place your `.wvd` file inside it, or set the path to your existing `.wvd` in `config.yaml`.
+5. Install the Python packages:
 
-      -specify your path to *.wvd file in the config.yaml (mandatory)
+```powershell
+pip install -r requirements.txt
+```
 
-      Sample config.yaml file to confirm format
+6. Edit `config.yaml`.
 
-      downloads_path: "C:/Downloads/"
-   
-      wvd_device_path: "C:/Downloads/Ozivine/wvd/l3.wvd"
-   
-      cookies_path: "C:/Downloads/Ozivine/cookies/cookies.txt"
+Sample config:
 
-      credentials:
-        10play: username:password       
-        sbs: username:password
+```yaml
+downloads_path: "C:/Downloads/"
+wvd_device_path: "C:/Downloads/Ozivine/wvd/l3.wvd"
+cookies_path: "C:/Downloads/Ozivine/cookies/cookies.txt"
 
-      tvnz:
-        local_storage: "D:/Downloads/CDM/local_storage.json"    
+credentials:
+  10play: username:password
+  sbs: username:password
 
+tvnz:
+  local_storage: "D:/Downloads/CDM/local_storage.json"
+
+proxy:
+  enabled: false
+  provider_order:
+    - surfsharkvpn
+    - nordvpn
+  services:
+    abciview: true
+    7plus: true
+    9now: true
+    10play: true
+    sbs: true
+    threenow: true
+    tvnz: true
+
+proxy_providers:
+  surfsharkvpn:
+    username:
+    password:
+    server_map:
+      AU: https://username:password@au-syd.prod.surfshark.com:443
+      NZ: https://username:password@nz-akl.prod.surfshark.com:443
+  nordvpn:
+    username:
+    password:
+    server_map:
+      AU:
+      NZ:
+```
 
 > [!TIP]
-> Clone the main branch to always stay up to date:
+> Clone the main branch to stay up to date:
 >
-> ```git clone https://github.com/billybanana80/ozivine.git ozivine```
+> ```powershell
+> git clone https://github.com/billybanana80/ozivine.git ozivine
+> ```
 
-## Common issues:
+## Proxy Support
 
-> ModuleNotFoundError: No module named ...
+Ozivine can route requests and downloads through a configured proxy provider. This is useful when a service requires an Australian or New Zealand IP address, or when your direct IP has been temporarily rate limited.
 
-You haven't installed the necessary packages. Run `pip install -r requirements.txt`
+Proxy routing is selected automatically from the input video URL:
 
-> "Required key and client ID not found"
+| Region | Services |
+| --- | --- |
+| AU | ABC iView, 7Plus, 9Now, 10Play, SBS On Demand |
+| NZ | ThreeNow, TVNZ |
 
-Content is encrypted and a decryption module is needed. This is up to the user and not provided by this project.
+Set proxy support in `config.yaml`:
 
-> ConnectionError: 400/403/404
+```yaml
+proxy:
+  enabled: true
+  provider_order:
+    - surfsharkvpn
+    - nordvpn
+  services:
+    abciview: true
+    7plus: true
+    9now: true
+    10play: true
+    sbs: true
+    threenow: true
+    tvnz: true
+```
 
-You're most likely being geo blocked by the service. Use a VPN or try the proxy option.
+Provider selection works like this:
 
-## Credentials:
+1. If `proxy.enabled` is `false`, Ozivine uses a direct connection.
+2. If `proxy.enabled` is `true`, Ozivine checks the service flag under `proxy.services`.
+3. If the current service is set to `false`, Ozivine uses a direct connection for that service.
+4. If the current service is set to `true`, Ozivine tries providers in `provider_order`.
+5. Surfshark is used first if its username, password, and matching `AU` or `NZ` server URL are filled in.
+6. NordVPN is used if Surfshark is incomplete and NordVPN has complete details for the required region.
+7. If no complete provider is configured, Ozivine falls back to a direct connection.
 
-If a service requires cookies, you can use a browser extension to download cookies as .txt file format:
+Example: use proxy for New Zealand services only:
 
-Firefox: https://addons.mozilla.org/addon/export-cookies-txt
+```yaml
+proxy:
+  enabled: true
+  services:
+    abciview: false
+    7plus: false
+    9now: false
+    10play: false
+    sbs: false
+    threenow: true
+    tvnz: true
+```
 
-Chrome: https://chromewebstore.google.com/detail/get-cookiestxt-clean/ahmnmhfbokciafffnknlekllgcnafnie
+Example Surfshark config:
 
+```yaml
+proxy_providers:
+  surfsharkvpn:
+    username: your_service_username
+    password: your_service_password
+    server_map:
+      AU: https://username:password@au-syd.prod.surfshark.com:443
+      NZ: https://username:password@nz-akl.prod.surfshark.com:443
+```
 
-Name it `{service_name}.txt` and place it in service folder eg: SEVEN.txt
+The `username` and `password` placeholders in `server_map` are replaced automatically from the provider credentials above.
 
-Modify the path to your cookies in the config.yaml file
+When a proxy is active, Ozivine also passes it to `N_m3u8DL-RE` with `--custom-proxy`. Printed download commands mask proxy credentials, but the real command uses the full proxy URL.
 
-## Usage:
+9Now uses lower downloader concurrency when a proxy is active because its HLS segment downloads can be sensitive to proxy/CDN `502 Bad Gateway` errors.
 
-Note: Australian or NZ IP address is required service dependent. Use a VPN or proxy as required.
+## Common Issues
 
-Navigate to the main url for the service you require
+### `ModuleNotFoundError: No module named ...`
 
-ABC iView
-https://iview.abc.net.au
+The required Python packages have not been installed. Run:
 
+```powershell
+pip install -r requirements.txt
+```
 
-7Plus
-https://7plus.com.au
+### `Required key and client ID not found`
 
+The content is encrypted and a decryption module is needed. This is up to the user and is not provided by this project.
 
-9Now
-https://www.9now.com.au
+### `ConnectionError: 400/403/404`
 
+You are most likely being geo-blocked by the service. Use a VPN or enable the proxy option.
 
-10
-https://10.com.au/
+## Credentials And Cookies
 
+Some services require cookies or login credentials.
 
-SBS On Demand
-https://www.sbs.com.au/ondemand/
+If a service requires cookies, use a browser extension to export cookies in `.txt` format:
 
+- Firefox: [Export Cookies TXT](https://addons.mozilla.org/addon/export-cookies-txt)
+- Chrome: [Get cookies.txt Clean](https://chromewebstore.google.com/detail/get-cookiestxt-clean/ahmnmhfbokciafffnknlekllgcnafnie)
 
-ThreeNow
-https://www.threenow.co.nz
+Name the file for the service and set its path in `config.yaml`.
 
+Example:
 
-TVNZ
-https://www.tvnz.co.nz/
+```yaml
+cookies_path: "C:/Downloads/Ozivine/cookies/cookies.txt"
+```
 
+Service notes:
 
+- ABC iView and 9Now can be used without an account.
+- 7Plus requires cookies from a logged-in free account.
+- 10Play and SBS require login/account data.
+- TVNZ requires local storage token.
+- ThreeNow requires a login to navigate the site.
 
-Then navigate to the video url of the show/episode/movie required.
+## Usage
 
-Examples:
+Australian or New Zealand IP access is required depending on the service. Use a VPN or proxy if needed.
 
+Run Ozivine and paste a supported video URL:
+
+```powershell
+python ozivine.py
+```
+
+Or pass the URL directly:
+
+```powershell
+python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10"
+```
+
+Supported service home pages:
+
+| Service | URL |
+| --- | --- |
+| ABC iView | https://iview.abc.net.au |
+| 7Plus | https://7plus.com.au |
+| 9Now | https://www.9now.com.au |
+| 10Play | https://10.com.au |
+| SBS On Demand | https://www.sbs.com.au/ondemand |
+| ThreeNow | https://www.threenow.co.nz |
+| TVNZ | https://www.tvnz.co.nz |
+
+Example video URLs:
+
+```text
 https://iview.abc.net.au/video/LE2427H007S00
-
-
 https://7plus.com.au/below-deck-down-under?episode-id=4NBCU2330-S2T18
-
-
 https://www.9now.com.au/paramedics/season-5/episode-10
-
-
 https://www.sbs.com.au/ondemand/watch/2260044867809
-
-
 https://10play.com.au/masterchef/episodes/season-16/episode-45/tpv240705dyovw
-
-
 https://www.threenow.co.nz/shows/thirst-with-shay-mitchell/season-1-ep-1/1718148621037/M86965-766
-
-
 https://www.tvnz.co.nz/player/tvepisode/tauranga-hilltop
+```
 
+It is not necessary to play the video in the browser to obtain the page URL.
 
+At the end of the script, Ozivine prints the `N_m3u8DL-RE` command and asks whether you want to download.
 
-Note: it is not necessary to play any of these videos in the browser to obtain the page url.
+```text
+Do you wish to download? Y or N:
+```
 
-ABC iView, 9Now and SBS On Demand can be navigated without an account or login required.
+You can choose `Y` to download, choose `N` to skip, or copy the printed command and modify it yourself.
 
-7Plus requires cookies to function, so a free account with the service is required. Register an account and login before exporting any cookies file.
+> [!TIP]
+> See `N_m3u8DL-RE --morehelp select-video/audio/subtitle` for possible selection patterns.
 
-10Play, SBS and TVNZ requires a login to function, so a free account with the service is required. Register an account and add your credentials to the config.yaml.
+## TVNZ Local Storage
 
-Important:
-TVNZ no longer uses a username/password to authenticate your account. They are now using your browser's local storage, so they need to be extracted once before being cached for future use.
-It is recommneded to have a separate user account for this script and not share the same account with your browser as the sessions cannot be shared between the two.
+TVNZ no longer uses a simple username/password flow for Ozivine. It uses browser local storage values, which need to be extracted once and then cached for future use.
 
-To extract your local storage details, in your browser press F12 to go to Dev Tools, go to the Console tab, paste in the below and hit enter
+It is recommended to use a separate TVNZ account for this script. Do not share the same TVNZ browser session with Ozivine, as the sessions cannot be shared between the two.
 
+To extract your local storage details:
+
+1. Open TVNZ in your browser.
+2. Press `F12` to open Developer Tools.
+3. Open the Console tab.
+4. Paste the following code and press Enter:
+
+```javascript
 Object.assign(document.createElement('a'), {
   href: URL.createObjectURL(new Blob([JSON.stringify({
     accessToken: localStorage.accessToken,
@@ -176,25 +285,16 @@ Object.assign(document.createElement('a'), {
   }, null, 2)])),
   download: 'local_storage.json'
 }).click();
-
-That will save a file named "local_storage.json" to your browser downloads folder.
-
-ThreeNow requires a login to navigate the site, so a free account with the service is required.
-
-```python
-Commands:
-  ozivine       Run the main Ozivine script
-
 ```
- A download command is printed at the end of the script. You can choose Y or N to downlaod or not.
- 
- You may choose to copy the N_m3u8DL-RE command and modify as you wish.
 
-> [!TIP]
-> See "N_m3u8DL-RE --morehelp select-video/audio/subtitle" for possible selection patterns
+This saves a file named `local_storage.json` to your browser downloads folder. Set the path in `config.yaml`:
+
+```yaml
+tvnz:
+  local_storage: "D:/Downloads/CDM/local_storage.json"
+```
 
 ## Disclaimer
 
-1. This project is purely for educational purposes and does not condone piracy
-2. RSA key pair required for key derivation is not included in this project
-
+1. This project is purely for educational purposes and does not condone piracy.
+2. RSA key pair required for key derivation is not included in this project.

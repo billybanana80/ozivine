@@ -5,6 +5,7 @@ import binascii
 import subprocess
 from xml.etree import ElementTree as ET
 from pywidevine import Cdm, Device, PSSH
+from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: ABC iView Video Downloader
 #   Author: billybanana
@@ -60,21 +61,145 @@ def get_license_data(video_id, drm_url, jwt_token):
         return None, None
 
 # Function to get 1080p MPD URL
-def get_mpd_url(video_id):
+def get_video_data(video_id):
     api_url = f"https://api.iview.abc.net.au/v3/video/{video_id}"
     response = requests.get(api_url)
     if response.status_code == 200:
-        data = response.json()
-        if '_embedded' in data and 'playlist' in data['_embedded']:
-            for playlist in data['_embedded']['playlist']:
-                if 'streams' in playlist and 'mpegdash' in playlist['streams']:
-                    mpegdash_streams = playlist['streams']['mpegdash']
-                    for quality in ['1080', '720', 'sd']:
-                        if quality in mpegdash_streams and video_id in mpegdash_streams[quality]:
-                            return mpegdash_streams[quality].replace('720.mpd', '1080.mpd')
-        return None
-    else:
-        return None
+        return response.json()
+    return None
+
+def get_mpd_candidates(video_id):
+    data = get_video_data(video_id)
+    candidates = []
+    seen_urls = set()
+
+    if data and '_embedded' in data and 'playlist' in data['_embedded']:
+        for playlist in data['_embedded']['playlist']:
+            if 'streams' not in playlist or 'mpegdash' not in playlist['streams']:
+                continue
+
+            mpegdash_streams = playlist['streams']['mpegdash']
+            source_url = None
+            for quality in ['1080', '720', 'sd']:
+                if quality in mpegdash_streams and video_id in mpegdash_streams[quality]:
+                    source_url = mpegdash_streams[quality]
+                    break
+
+            if not source_url:
+                continue
+
+            upgraded_url = source_url.replace('720.mpd', '1080.mpd')
+            for label, url in [('1080', upgraded_url), ('source', source_url)]:
+                if url not in seen_urls:
+                    candidates.append({'label': label, 'url': url})
+                    seen_urls.add(url)
+
+            break
+
+    return candidates
+
+def get_mpd_url(video_id):
+    candidates = get_mpd_candidates(video_id)
+    return candidates[0]['url'] if candidates else None
+
+def get_mpd_streams(mpd_url):
+    response = requests.get(mpd_url)
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.content)
+    streams = []
+    for adaptation_set in root.iter():
+        if not adaptation_set.tag.endswith('AdaptationSet'):
+            continue
+
+        content_type = adaptation_set.attrib.get('contentType', '').lower()
+        mime_type = adaptation_set.attrib.get('mimeType', '').lower()
+        lang = adaptation_set.attrib.get('lang', '-')
+
+        for representation in adaptation_set:
+            if not representation.tag.endswith('Representation'):
+                continue
+
+            rep_mime_type = representation.attrib.get('mimeType', '').lower()
+            rep_content = f"{content_type} {mime_type} {rep_mime_type}"
+            codecs = representation.attrib.get('codecs') or adaptation_set.attrib.get('codecs') or 'unknown codecs'
+            bandwidth = representation.attrib.get('bandwidth')
+            bitrate = f"{int(bandwidth) // 1000} Kbps" if bandwidth and bandwidth.isdigit() else "unknown bitrate"
+            width = representation.attrib.get('width')
+            height = representation.attrib.get('height')
+
+            if 'video' in rep_content or width or height:
+                stream_type = 'Vid'
+                resolution = f"{width or '?'}x{height or '?'}"
+            elif 'audio' in rep_content:
+                stream_type = 'Aud'
+                resolution = '-'
+            elif 'text' in rep_content or 'subtitle' in rep_content or codecs.lower() in {'stpp', 'wvtt'}:
+                stream_type = 'Sub'
+                resolution = '-'
+            else:
+                continue
+
+            streams.append({
+                'type': stream_type,
+                'resolution': resolution,
+                'bitrate': bitrate,
+                'codec': codecs,
+                'lang': lang or '-'
+            })
+
+    return streams
+
+def get_available_streams(candidates):
+    streams = []
+    seen = set()
+    for candidate in candidates:
+        for stream in get_mpd_streams(candidate['url']):
+            stream_key = (
+                stream['type'],
+                stream['resolution'],
+                stream['bitrate'],
+                stream['codec'],
+                stream['lang']
+            )
+            if stream_key not in seen:
+                streams.append(stream)
+                seen.add(stream_key)
+    return sorted(streams, key=stream_sort_key)
+
+def stream_sort_key(stream):
+    type_order = {'Vid': 0, 'Aud': 1, 'Sub': 2}
+    height = 0
+    bitrate = 0
+
+    resolution_match = re.search(r'x(\d+)', stream['resolution'])
+    if resolution_match:
+        height = int(resolution_match.group(1))
+
+    bitrate_match = re.search(r'(\d+)', stream['bitrate'])
+    if bitrate_match:
+        bitrate = int(bitrate_match.group(1))
+
+    return (type_order.get(stream['type'], 9), -height, -bitrate, stream['codec'], stream['lang'])
+
+def print_streams(streams):
+    if not streams:
+        print(f"\n{bcolors.YELLOW}Available streams: {bcolors.ENDC}No streams found")
+        return
+
+    print(f"\n{bcolors.YELLOW}Available streams:{bcolors.ENDC}")
+    print(f"{'#':>3}  {'Type':<4} {'Resolution':<11} {'Bitrate':<16} {'Codec':<18} {'Lang':<6}")
+    print(f"{'--':>3}  {'----':<4} {'----------':<11} {'----------------':<16} {'------------------':<18} {'------':<6}")
+    for index, stream in enumerate(streams, start=1):
+        print(
+            f"{index:>3}  "
+            f"{stream['type']:<4} "
+            f"{stream['resolution']:<11} "
+            f"{stream['bitrate']:<16} "
+            f"{stream['codec']:<18} "
+            f"{stream['lang']:<6}"
+        )
 
 # Function to get PSSH from MPD URL
 def extract_pssh(mpd_url):
@@ -162,15 +287,27 @@ def format_keys(keys):
         formatted_keys.append(f"{key.kid.hex}:{key.key.hex()}")
     return formatted_keys
 
+def build_download_command(mpd_url, downloads_path, formatted_file_name, formatted_keys, mode):
+    selectors = "" if mode == "interactive" else "--select-video res=1080 --select-audio all --select-subtitle all "
+    keys = " --key " + " --key ".join(formatted_keys)
+    download_command = (
+        f'N_m3u8DL-RE "{mpd_url}" '
+        f'{selectors}'
+        f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}"'
+        f'{keys}'
+    )
+    return append_downloader_proxy(download_command)
+
 # Main execution flow
-def main(video_url, downloads_path, wvd_device_path):
+def main(video_url, downloads_path, wvd_device_path, mode="auto"):
     client_id = "1d4b5cba-42d2-403e-80e7-34565cdf772d"
     jwt_url = "https://api.iview.abc.net.au/v3/token/jwt"
     drm_url = "https://api.iview.abc.net.au/v3/token/drm/{video_id}"
 
     video_id = get_video_id(video_url)
     if video_id:
-        mpd_url = get_mpd_url(video_id)
+        candidates = get_mpd_candidates(video_id)
+        mpd_url = candidates[0]['url'] if candidates else None
         if mpd_url:
             pssh = extract_pssh(mpd_url)
             if pssh:
@@ -186,9 +323,15 @@ def main(video_url, downloads_path, wvd_device_path):
                     print(f"{bcolors.LIGHTBLUE}PSSH: {bcolors.ENDC}{pssh}")
                     for key in formatted_keys:
                         print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
+
+                    if mode == "info":
+                        print_streams(get_available_streams(candidates))
+                        print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
+                        return
+
                     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                    download_command = f"""N_m3u8DL-RE "{mpd_url}" --select-video res=1080 --select-audio all --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" --key """ + ' --key '.join(formatted_keys)
-                    print(download_command)
+                    download_command = build_download_command(mpd_url, downloads_path, formatted_file_name, formatted_keys, mode)
+                    print(mask_proxy_command(download_command))
                     
                     if download_command:
                         user_input = input("Do you wish to download? Y or N: ").strip().lower()

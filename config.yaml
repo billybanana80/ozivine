@@ -8,4 +8,29 @@ credentials:
 
 tvnz: # Replace with path to your own local_storage file
   local_storage: "C:/YourPath/local_storage.json"  
-
+proxy:
+  enabled: false
+  provider_order:
+  - surfsharkvpn
+  - nordvpn
+  services:
+    abciview: false
+    7plus: false
+    9now: false
+    10play: true
+    sbs: false
+    threenow: false
+    tvnz: false
+proxy_providers:
+  surfsharkvpn:
+    password: # Replace with your own Surfshark OpenVPN credentials
+    server_map:
+      NZ: https://username:password@nz-akl.prod.surfshark.com:443 # Leave as is
+      AU: https://username:password@au-syd.prod.surfshark.com:443 # Leave as is
+    username: # Replace with your own Surfshark OpenVPN credentials
+  nordvpn:
+    password: # Replace with your own Nord OpenVPN credentials
+    server_map:
+      NZ: # Replace with Nord server details
+      AU: # Replace with Nord server details
+    username: # Replace with your own Nord OpenVPN credentials

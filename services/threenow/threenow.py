@@ -6,6 +6,8 @@ from pywidevine.device import Device
 from pywidevine.pssh import PSSH
 import subprocess
 from datetime import datetime
+from urllib.parse import urljoin
+from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: ThreeNow Video Downloader
 #   Author: billybanana
@@ -53,6 +55,30 @@ class bcolors:
     YELLOW = '\033[93m'
     ORANGE = '\033[38;5;208m'
 
+def clean_title(value):
+    value = re.sub(r'[,\-]', ' ', str(value or ""))
+    value = re.sub(r'\s+', '.', value.strip())
+    value = re.sub(r'\.+', '.', value)
+    return value.strip('.')
+
+def season_episode_tag(season, episode):
+    try:
+        return f"S{int(season):02}E{int(episode):02}"
+    except (TypeError, ValueError):
+        return None
+
+def get_url_season_episode(video_url):
+    match = re.search(r'/season-(\d+)-ep-(\d+)(?:/|$)', video_url, re.IGNORECASE)
+    if not match:
+        return None
+    return season_episode_tag(match.group(1), match.group(2))
+
+def episode_with_season(episode, season):
+    episode = dict(episode)
+    episode.setdefault("seasonNumber", season.get("seasonNumber"))
+    episode.setdefault("season", season.get("seasonNumber"))
+    return episode
+
 # Get the Brightcove Video ID from the video URL
 def get_video_info(video_url):
     # Extract show_id and videoId from the URL
@@ -89,12 +115,12 @@ def get_video_info(video_url):
         for season in data.get("seasons", []):
             for episode in season.get("episodes", []):
                 if episode.get("videoId") == video_id or episode.get("externalMediaId") == video_id:
-                    return episode
+                    return episode_with_season(episode, season)
     else:
         for season in data.get("seasons", []):
             for episode in season.get("episodes", []):
                 if episode.get("videoId") == video_id or episode.get("externalMediaId") == video_id:
-                    return episode
+                    return episode_with_season(episode, season)
     
     raise ValueError("Could not find the video ID in the API response.")
 
@@ -220,14 +246,154 @@ def get_best_video_height(url_mpd):
             return "SD"
     return "720p"
 
+def stream_sort_key(stream):
+    type_order = {"Vid": 0, "Aud": 1, "Sub": 2}
+    height = 0
+    bitrate = 0
+
+    resolution_match = re.search(r"x(\d+)", stream["resolution"])
+    if resolution_match:
+        height = int(resolution_match.group(1))
+
+    bitrate_match = re.search(r"(\d+)", stream["bitrate"])
+    if bitrate_match:
+        bitrate = int(bitrate_match.group(1))
+
+    return (type_order.get(stream["type"], 9), -height, -bitrate, stream["codec"], stream["lang"])
+
+def print_streams(streams):
+    if not streams:
+        print(f"\n{bcolors.YELLOW}Available streams: {bcolors.ENDC}No streams found")
+        return
+
+    print(f"\n{bcolors.YELLOW}Available streams:{bcolors.ENDC}")
+    print(f"{'#':>3}  {'Type':<4} {'Resolution':<11} {'Bitrate':<16} {'Codec':<18} {'Lang':<6}")
+    print(f"{'--':>3}  {'----':<4} {'----------':<11} {'----------------':<16} {'------------------':<18} {'------':<6}")
+    for index, stream in enumerate(streams, start=1):
+        print(
+            f"{index:>3}  "
+            f"{stream['type']:<4} "
+            f"{stream['resolution']:<11} "
+            f"{stream['bitrate']:<16} "
+            f"{stream['codec']:<18} "
+            f"{stream['lang']:<6}"
+        )
+
+def get_mpd_streams(url_mpd):
+    response = requests.get(url_mpd)
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+    streams = []
+
+    for adaptation_set in root.iter():
+        if not adaptation_set.tag.endswith("AdaptationSet"):
+            continue
+
+        content_type = (adaptation_set.attrib.get("contentType") or "").lower()
+        mime_type = (adaptation_set.attrib.get("mimeType") or "").lower()
+        lang = adaptation_set.attrib.get("lang") or "-"
+
+        for representation in adaptation_set:
+            if not representation.tag.endswith("Representation"):
+                continue
+
+            rep_mime_type = (representation.attrib.get("mimeType") or "").lower()
+            rep_content = f"{content_type} {mime_type} {rep_mime_type}"
+            codecs = representation.attrib.get("codecs") or adaptation_set.attrib.get("codecs") or "unknown codecs"
+            bandwidth = representation.attrib.get("bandwidth")
+            bitrate = f"{int(bandwidth) // 1000} Kbps" if bandwidth and bandwidth.isdigit() else "unknown bitrate"
+            width = representation.attrib.get("width")
+            height = representation.attrib.get("height")
+
+            if "video" in rep_content or width or height:
+                stream_type = "Vid"
+                resolution = f"{width or '?'}x{height or '?'}"
+            elif "audio" in rep_content:
+                stream_type = "Aud"
+                resolution = "-"
+            elif "text" in rep_content or "subtitle" in rep_content or codecs.lower() in {"stpp", "wvtt"}:
+                stream_type = "Sub"
+                resolution = "-"
+            else:
+                continue
+
+            streams.append({
+                "type": stream_type,
+                "resolution": resolution,
+                "bitrate": bitrate,
+                "codec": codecs,
+                "lang": lang,
+            })
+
+    return sorted(streams, key=stream_sort_key)
+
+def parse_m3u8_attributes(value):
+    attrs = {}
+    for match in re.finditer(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', value):
+        attrs[match.group(1)] = match.group(2).strip().strip('"')
+    return attrs
+
+def get_m3u8_streams(m3u8_url):
+    response = requests.get(m3u8_url)
+    response.raise_for_status()
+    streams = []
+    last_attrs = None
+
+    for line in response.text.splitlines():
+        value = line.strip()
+        if value.startswith("#EXT-X-STREAM-INF:"):
+            last_attrs = parse_m3u8_attributes(value.split(":", 1)[1])
+            continue
+
+        if not last_attrs or not value or value.startswith("#"):
+            continue
+
+        bandwidth = last_attrs.get("BANDWIDTH") or last_attrs.get("AVERAGE-BANDWIDTH")
+        resolution = last_attrs.get("RESOLUTION") or "-"
+        codecs = last_attrs.get("CODECS") or "unknown codecs"
+        bitrate = f"{int(bandwidth) // 1000} Kbps" if bandwidth and bandwidth.isdigit() else "unknown bitrate"
+        streams.append({
+            "type": "Vid",
+            "resolution": resolution,
+            "bitrate": bitrate,
+            "codec": codecs,
+            "lang": "-",
+        })
+        last_attrs = None
+
+    return sorted(streams, key=stream_sort_key)
+
+def build_download_command(manifest_url, downloads_path, formatted_filename, keys=None, mode="auto"):
+    selectors = "" if mode == "interactive" else "--select-video best --select-audio best --select-subtitle all "
+    download_command = (
+        f'N_m3u8DL-RE "{manifest_url}" '
+        f'{selectors}'
+        f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}"'
+    )
+    if keys:
+        download_command += " --key " + " --key ".join(keys)
+    return append_downloader_proxy(download_command)
+
+def get_video_info_season_episode(video_info):
+    season = (
+        video_info.get("seasonNumber")
+        or video_info.get("season")
+        or video_info.get("series")
+    )
+    episode = (
+        video_info.get("episode")
+        or video_info.get("episodeNumber")
+        or video_info.get("ep")
+    )
+    return season_episode_tag(season, episode)
+
 # Format the filename based on the type of content
-def get_formatted_filename(show_id, video_id, best_height):
+def get_formatted_filename(show_id, video_id, best_height, video_info=None, video_url=""):
     show_info = get_additional_video_info(show_id, video_id)
     show_title = show_info['showTitle']
     name = show_info['name']
     
-    # Remove spaces, commas, and dashes, and replace with dots
-    show_title = re.sub(r'[ ,\-]', '.', show_title)
+    show_title = clean_title(show_title)
     
     # Handle different types of content
     if re.match(r'Season \d+ Ep \d+', name):
@@ -240,10 +406,16 @@ def get_formatted_filename(show_id, video_id, best_height):
         date_str = datetime.strptime(name, '%A %d %B %Y').strftime('%Y%m%d')
         return f"{show_title}.{date_str}.{best_height}.ThreeNow.WEB-DL.AAC2.0.H.264"
     else:
+        season_episode = None
+        if video_info:
+            season_episode = get_video_info_season_episode(video_info)
+        season_episode = season_episode or get_url_season_episode(video_url)
+        if season_episode:
+            return f"{show_title}.{season_episode}.{best_height}.ThreeNow.WEB-DL.AAC2.0.H.264"
         return f"{show_title}.{best_height}.ThreeNow.WEB-DL.AAC2.0.H.264"
 
 # Print all the required information and download command
-def get_download_command(video_url, downloads_path, wvd_device_path):
+def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"):
     try:
         video_info = get_video_info(video_url)
         show_id = video_info['showId']
@@ -254,10 +426,17 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
         
         if manifest_url.endswith("master.m3u8"):
             # Handling HLS playlist
-            formatted_filename = get_formatted_filename(show_id, video_id, "720p")
-            download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}" """
+            formatted_filename = get_formatted_filename(show_id, video_id, "720p", video_info, video_url)
+            print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
+
+            if mode == "info":
+                print_streams(get_m3u8_streams(manifest_url))
+                print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_filename}.mkv")
+                return
+
+            download_command = build_download_command(manifest_url, downloads_path, formatted_filename, mode=mode)
             print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-            print(download_command)
+            print(mask_proxy_command(download_command))
 
             user_input = input("Do you wish to download? Y or N: ").strip().lower()
             if user_input == 'y':
@@ -267,7 +446,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
             try:
                 pssh, lic_url = get_pssh_and_license(manifest_url)
                 best_height = get_best_video_height(manifest_url)
-                formatted_filename = get_formatted_filename(show_id, video_id, best_height)
+                formatted_filename = get_formatted_filename(show_id, video_id, best_height, video_info, video_url)
                 
                 print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{manifest_url}")
                 print(f"{bcolors.RED}License URL: {bcolors.ENDC}{lic_url}")
@@ -276,10 +455,15 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
                 keys = get_keys(pssh, lic_url, wvd_device_path)
                 for key in keys:
                     print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
+
+                if mode == "info":
+                    print_streams(get_mpd_streams(manifest_url))
+                    print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_filename}.mkv")
+                    return
                 
-                download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}" --key """ + ' --key '.join(keys)
+                download_command = build_download_command(manifest_url, downloads_path, formatted_filename, keys, mode)
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                print(download_command)
+                print(mask_proxy_command(download_command))
 
                 user_input = input("Do you wish to download? Y or N: ").strip().lower()
                 if user_input == 'y':
@@ -290,11 +474,17 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
                     if source.get('type') == 'application/x-mpegURL':
                         manifest_url = source['src']
                         break
-                formatted_filename = get_formatted_filename(show_id, video_id, "720p")
-                download_command = f"""N_m3u8DL-RE "{manifest_url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_filename}" """
+                formatted_filename = get_formatted_filename(show_id, video_id, "720p", video_info, video_url)
                 print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
+
+                if mode == "info":
+                    print_streams(get_m3u8_streams(manifest_url))
+                    print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_filename}.mkv")
+                    return
+
+                download_command = build_download_command(manifest_url, downloads_path, formatted_filename, mode=mode)
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                print(download_command)
+                print(mask_proxy_command(download_command))
 
                 user_input = input("Do you wish to download? Y or N: ").strip().lower()
                 if user_input == 'y':
@@ -302,6 +492,6 @@ def get_download_command(video_url, downloads_path, wvd_device_path):
     except Exception as e:
         print(f"Error: {e}")
 
-def main(video_url, downloads_path, wvd_device_path):
-    get_download_command(video_url, downloads_path, wvd_device_path)
+def main(video_url, downloads_path, wvd_device_path, mode="auto"):
+    get_download_command(video_url, downloads_path, wvd_device_path, mode)
 

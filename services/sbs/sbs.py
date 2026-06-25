@@ -6,6 +6,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 import requests
 import yaml
+from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: SBS On Demand Video Downloader
 #   Author: billybanana
@@ -265,6 +266,46 @@ def get_max_height_m3u8(url_m3u8):
         print(f"Error fetching max height from m3u8: {e}")
         return 0
 
+def get_m3u8_streams(url_m3u8):
+    streams = []
+    try:
+        response = requests.get(url_m3u8, timeout=20)
+        response.raise_for_status()
+        pending = None
+        for line in response.text.splitlines():
+            line = line.strip()
+            if line.startswith("#EXT-X-STREAM-INF"):
+                resolution = re.search(r"RESOLUTION=(\d+x\d+)", line)
+                bandwidth = re.search(r"BANDWIDTH=(\d+)", line)
+                codecs = re.search(r'CODECS="([^"]+)"', line)
+                pending = {
+                    "resolution": resolution.group(1) if resolution else "",
+                    "bandwidth": int(bandwidth.group(1)) if bandwidth else 0,
+                    "codecs": codecs.group(1) if codecs else "",
+                }
+            elif pending and line and not line.startswith("#"):
+                streams.append(pending)
+                pending = None
+    except Exception as e:
+        print(f"Error fetching m3u8 streams: {e}")
+    return sorted(streams, key=lambda item: item["bandwidth"], reverse=True)
+
+def print_streams(streams):
+    if not streams:
+        print(f"\n{bcolors.WARNING}No stream variants found.{bcolors.ENDC}")
+        return
+
+    print(f"\n{bcolors.YELLOW}Available streams:{bcolors.ENDC}")
+    header = f"  {'#':>2}  {'Type':<4} {'Resolution':<10} {'Bitrate':<16} {'Codec':<18} {'Lang':<5}"
+    divider = f"  {'-' * 2}  {'-' * 4} {'-' * 10} {'-' * 16} {'-' * 18} {'-' * 5}"
+    print(header)
+    print(divider)
+    for idx, stream in enumerate(streams, start=1):
+        kbps = round(stream.get("bandwidth", 0) / 1000)
+        bitrate = f"{kbps} Kbps" if kbps else "unknown bitrate"
+        codecs = stream.get("codecs") or "unknown codecs"
+        print(f"  {idx:>2}  {'Vid':<4} {(stream.get('resolution') or '-'):<10} {bitrate:<16} {codecs:<18} {'-':<5}")
+
 # Function to build the video file name
 def build_filename(playback_data, video_height):
     entity_type = playback_data.get("entityType", "")
@@ -300,23 +341,43 @@ def extract_info(video_url, access_token):
     return manifest_url, formatted_file_name
 
 # Function to format and display download command
-def display_download_command(manifest_url, formatted_file_name, downloads_path):
+def build_download_command(manifest_url, formatted_file_name, downloads_path, interactive=False):
+    selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle all "
     download_command = (
         f'N_m3u8DL-RE "{manifest_url}" '
-        f'--select-video best --select-audio best --select-subtitle all '
+        f'{selectors}'
         f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}"'
+    )
+    return append_downloader_proxy(download_command)
+
+def display_info(manifest_url, formatted_file_name):
+    print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
+    print_streams(get_m3u8_streams(manifest_url))
+    print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
+
+# Function to format and display download command
+def display_download_command(manifest_url, formatted_file_name, downloads_path, mode="auto"):
+    if mode == "info":
+        display_info(manifest_url, formatted_file_name)
+        return
+
+    download_command = build_download_command(
+        manifest_url,
+        formatted_file_name,
+        downloads_path,
+        interactive=(mode == "interactive"),
     )
 
     print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
-    print(download_command)
+    print(mask_proxy_command(download_command))
 
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == "y":
         subprocess.run(download_command, shell=True)
 
 # Main function
-def main(video_url, downloads_path, credentials):
+def main(video_url, downloads_path, credentials, mode="auto"):
     config = load_config()
     access_token = get_sbs_access_token(config, credentials)
 
@@ -324,4 +385,4 @@ def main(video_url, downloads_path, credentials):
     if not manifest_url:
         return
 
-    display_download_command(manifest_url, formatted_file_name, downloads_path)
+    display_download_command(manifest_url, formatted_file_name, downloads_path, mode)

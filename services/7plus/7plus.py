@@ -12,6 +12,7 @@ import binascii
 import os
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
+from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: 7Plus Video Downloader
 #   Author: billybanana
@@ -317,8 +318,142 @@ def get_resolution_from_m3u8(m3u8_url):
     best_resolution = max(resolutions, key=lambda r: int(r.split('x')[1]))
     return f"{best_resolution.split('x')[1]}p"
 
+def get_mpd_streams(mpd_url):
+    streams = []
+    response = requests.get(mpd_url)
+    if response.status_code != 200:
+        _PRINT(f"{bcolors.FAIL}Failed to load MPD, status code: {response.status_code}{bcolors.ENDC}")
+        return streams
+
+    mpd_xml = etree.fromstring(response.content)
+    adaptation_sets = mpd_xml.xpath('//default:AdaptationSet', namespaces={'default': 'urn:mpeg:dash:schema:mpd:2011'})
+    for adaptation in adaptation_sets:
+        mime_type = adaptation.attrib.get("mimeType", "")
+        content_type = adaptation.attrib.get("contentType", "")
+        language = adaptation.attrib.get("lang", "")
+        if "video" in mime_type or content_type == "video":
+            stream_type = "video"
+        elif "audio" in mime_type or content_type == "audio":
+            stream_type = "audio"
+        elif "text" in mime_type or "ttml" in mime_type or content_type == "text":
+            stream_type = "subtitle"
+        else:
+            stream_type = "stream"
+
+        representations = adaptation.xpath('./default:Representation', namespaces={'default': 'urn:mpeg:dash:schema:mpd:2011'})
+        for rep in representations:
+            width = rep.attrib.get("width")
+            height = rep.attrib.get("height")
+            bandwidth = rep.attrib.get("bandwidth")
+            streams.append({
+                "type": stream_type,
+                "resolution": f"{width}x{height}" if width and height else "",
+                "bandwidth": int(bandwidth) if str(bandwidth or "").isdigit() else 0,
+                "codecs": rep.attrib.get("codecs") or adaptation.attrib.get("codecs", ""),
+                "language": language,
+            })
+    return sorted(streams, key=lambda item: (item["type"] != "video", -item["bandwidth"]))
+
+def get_m3u8_streams(m3u8_url):
+    streams = []
+    response = requests.get(m3u8_url)
+    if response.status_code != 200:
+        _PRINT(f"{bcolors.FAIL}Failed to load M3U8, status code: {response.status_code}{bcolors.ENDC}")
+        return streams
+
+    pending = None
+    for line in response.text.splitlines():
+        line = line.strip()
+        if line.startswith("#EXT-X-STREAM-INF"):
+            resolution = re.search(r"RESOLUTION=(\d+x\d+)", line)
+            bandwidth = re.search(r"BANDWIDTH=(\d+)", line)
+            codecs = re.search(r'CODECS="([^"]+)"', line)
+            pending = {
+                "type": "video",
+                "resolution": resolution.group(1) if resolution else "",
+                "bandwidth": int(bandwidth.group(1)) if bandwidth else 0,
+                "codecs": codecs.group(1) if codecs else "",
+                "language": "",
+            }
+        elif pending and line and not line.startswith("#"):
+            streams.append(pending)
+            pending = None
+    return sorted(streams, key=lambda item: item["bandwidth"], reverse=True)
+
+def print_streams(streams):
+    if not streams:
+        _PRINT(f"\n{bcolors.WARNING}No stream variants found.{bcolors.ENDC}")
+        return
+
+    _PRINT(f"\n{bcolors.YELLOW}Available streams:{bcolors.ENDC}")
+    header = f"  {'#':>2}  {'Type':<4} {'Resolution':<10} {'Bitrate':<16} {'Codec':<18} {'Lang':<5}"
+    divider = f"  {'-' * 2}  {'-' * 4} {'-' * 10} {'-' * 16} {'-' * 18} {'-' * 5}"
+    _PRINT(header)
+    _PRINT(divider)
+    for idx, stream in enumerate(streams, start=1):
+        kbps = round(stream.get("bandwidth", 0) / 1000)
+        bitrate = f"{kbps} Kbps" if kbps else "unknown bitrate"
+        codecs = stream.get("codecs") or "unknown codecs"
+        stream_type = stream.get("type", "stream")
+        if stream_type == "video":
+            label = "Vid"
+            resolution = stream.get("resolution") or "-"
+        elif stream_type == "audio":
+            label = "Aud"
+            resolution = "-"
+        elif stream_type == "subtitle":
+            label = "Sub"
+            resolution = "-"
+        else:
+            label = "Stream"
+            resolution = stream.get("resolution") or "-"
+        language = stream.get("language") or "-"
+        _PRINT(f"  {idx:>2}  {label:<4} {resolution:<10} {bitrate:<16} {codecs:<18} {language:<5}")
+
+def build_7plus_command(url, downloads_path, formatted_file_name, keys=None, interactive=False):
+    selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle all "
+    download_command = (
+        f'N_m3u8DL-RE "{url}" '
+        f'{selectors}'
+        f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}"'
+    )
+    download_command = append_downloader_proxy(download_command)
+    if keys:
+        download_command += " --key " + " --key ".join(keys)
+    return download_command
+
+def print_7plus_info(source_url, source_type, formatted_file_name, lic_url=None, pssh=None, keys=None):
+    if source_type == "mpd":
+        _PRINT(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{source_url}")
+        if lic_url:
+            _PRINT(f"{bcolors.RED}License URL: {bcolors.ENDC}{lic_url}")
+        if pssh:
+            _PRINT(f"{bcolors.LIGHTBLUE}PSSH: {bcolors.ENDC}{pssh}")
+        for key in keys or []:
+            _PRINT(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
+        print_streams(get_mpd_streams(source_url))
+    else:
+        _PRINT(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{source_url}")
+        print_streams(get_m3u8_streams(source_url))
+    _PRINT(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
+
+def season_episode_from_episode_id(episode_id):
+    match = re.search(r'^[A-Z]+(?P<season>\d{2,4})-(?P<episode>\d+)$', episode_id or "", re.IGNORECASE)
+    if not match:
+        return ""
+
+    season = match.group("season")
+    episode = match.group("episode")
+
+    if len(season) == 2 and int(season) >= 20:
+        season = f"20{season}"
+    elif len(season) == 2:
+        season = season.zfill(2)
+
+    return f"S{season}E{int(episode):02d}"
+
 # Function to format and display download command
-def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path):
+def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode="auto"):
     formats = info.get('formats')
     if not formats:
         print(f"{bcolors.FAIL}No formats found in info{bcolors.ENDC}")
@@ -342,9 +477,10 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             if season_episode_tag:
                 formatted_file_name += f".{season_episode_tag}"
             formatted_file_name += f".{resolution}.7PLUS.WEB-DL.AAC2.0.H.264"
-            download_command = f"""N_m3u8DL-RE "{url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
-            if keys:
-                download_command += " --key " + " --key ".join(keys)
+            if mode == "info":
+                print_7plus_info(url, "mpd", formatted_file_name, lic_url, pssh, keys)
+                return
+            download_command = build_7plus_command(url, downloads_path, formatted_file_name, keys, interactive=(mode == "interactive"))
         
         # -- VISIBLE OUTPUT (encrypted MPD) -----------------------------------
         _PRINT(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{url}")
@@ -353,7 +489,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
         for key in keys:
             _PRINT(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
         _PRINT(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-        _PRINT(download_command)
+        _PRINT(mask_proxy_command(download_command))
         # ---------------------------------------------------------------------
         
         user_input = input("Do you wish to download? Y or N: ").strip().lower()
@@ -368,12 +504,15 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             if season_episode_tag:
                 formatted_file_name += f".{season_episode_tag}"
             formatted_file_name += f".{resolution}.7PLUS.WEB-DL.AAC2.0.H.264"
-            download_command = f"""N_m3u8DL-RE "{url}" --select-video best --select-audio best --select-subtitle all -mt -M format=mkv --save-dir "{downloads_path}" --save-name "{formatted_file_name}" """
+            if mode == "info":
+                print_7plus_info(url, "m3u8", formatted_file_name)
+                return
+            download_command = build_7plus_command(url, downloads_path, formatted_file_name, interactive=(mode == "interactive"))
             
             # -- VISIBLE OUTPUT (unencrypted m3u8) -----------------------------
             _PRINT(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{url}")
             _PRINT(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
-            _PRINT(download_command)
+            _PRINT(mask_proxy_command(download_command))
             # ------------------------------------------------------------------
             
             user_input = input("Do you wish to download? Y or N: ").strip().lower()
@@ -383,7 +522,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             print(f"{bcolors.FAIL}Failed to retrieve necessary information for download{bcolors.ENDC}")       
 
 # Main logic
-def main(video_url, downloads_path, wvd_device_path, cookies_path): 
+def main(video_url, downloads_path, wvd_device_path, cookies_path, mode="auto"): 
 
     # 1) Probe playback (unchanged) — add progress around it
     print(f"{bcolors.OKBLUE}[STEP] Calling extract_info (videoservice)…{bcolors.ENDC}")
@@ -391,7 +530,7 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
     if not info:
         print(f"{bcolors.FAIL}[ERR] extract_info returned no info — aborting{bcolors.ENDC}")
         return
-    print(f"{bcolors.OKGREEN}[OK] extract_info succeeded{bcolors.ENDC}")
+    print(f"{bcolors.OKGREEN}✅ extract_info succeeded{bcolors.ENDC}")
 
     # 2) Parse show_name + episode_id from the URL (unchanged logic)
     try:
@@ -411,7 +550,7 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
     cookies = MozillaCookieJar(cookies_path)
     try:
         cookies.load(ignore_discard=True, ignore_expires=True)
-        print(f"{bcolors.OKGREEN}[OK] Loaded cookies: {len(list(cookies))} items from {cookies_path}{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ Loaded cookies: {len(list(cookies))} items from {cookies_path}{bcolors.ENDC}")
     except Exception as e:
         print(f"{bcolors.FAIL}[ERR] Failed to load cookies: {e}{bcolors.ENDC}")
         return
@@ -448,7 +587,7 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
     if not api_key or not login_token:
         print(f"{bcolors.FAIL}[ERR] Failed to find Gigya API key/login_token (glt_*) in cookies{bcolors.ENDC}")
         return
-    print(f"{bcolors.OKGREEN}[OK] Found Gigya API key (masked): {api_key[:6]}…{bcolors.ENDC}")
+    print(f"{bcolors.OKGREEN}✅ Found Gigya API key (masked): {api_key[:6]}…{bcolors.ENDC}")
 
     # 6) Gigya -> id_token
     login_url = 'https://login.7plus.com.au/accounts.getJWT'
@@ -470,7 +609,7 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
         if not id_token:
             print(f"{bcolors.FAIL}[ERR] No id_token in Gigya response{bcolors.ENDC}")
             return
-        print(f"{bcolors.OKGREEN}[OK] Received id_token{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ Received id_token{bcolors.ENDC}")
     except Exception as e:
         print(f"{bcolors.FAIL}[ERR] Gigya JWT call failed: {e}{bcolors.ENDC}")
         return
@@ -491,7 +630,7 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
         if not auth_token:
             print(f"{bcolors.FAIL}[ERR] No auth token in /auth/token response{bcolors.ENDC}")
             return
-        print(f"{bcolors.OKGREEN}[OK] Received auth token (masked): {auth_token[:12]}…{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ Received auth token (masked): {auth_token[:12]}…{bcolors.ENDC}")
     except Exception as e:
         print(f"{bcolors.FAIL}[ERR] Auth token exchange failed: {e}{bcolors.ENDC}")
         return
@@ -517,7 +656,7 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
     try:
         show_title = show_response['title'].replace(" ", ".")
         alt_tag = show_response['pageMetaData']['objectGraphImage']['altTag']
-        print(f"{bcolors.OKGREEN}[OK] Parsed show metadata — title={show_title}{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ Parsed show metadata — title={show_title}{bcolors.ENDC}")
     except Exception as e:
         print(f"{bcolors.FAIL}[ERR] Parsing show metadata failed: {e}{bcolors.ENDC}")
         return
@@ -529,9 +668,13 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path):
         season_episode_tag = f"S{season.zfill(2)}E{episode.zfill(2)}"
         print(f"{bcolors.OKBLUE}[PARSE] season_episode_tag={season_episode_tag}{bcolors.ENDC}")
     else:
-        print(f"{bcolors.WARNING}[WARN] Could not find 'Season X Episode Y' in altTag; continuing without tag{bcolors.ENDC}")
+        season_episode_tag = season_episode_from_episode_id(episode_id)
+        if season_episode_tag:
+            print(f"{bcolors.OKBLUE}[PARSE] season_episode_tag={season_episode_tag} from episode-id{bcolors.ENDC}")
+        else:
+            print(f"{bcolors.WARNING}[WARN] Could not find season/episode metadata; continuing without tag{bcolors.ENDC}")
 
     # 10) Kick off download command (unchanged)
     print(f"{bcolors.OKBLUE}[STEP] Building download command…{bcolors.ENDC}")
-    get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path)
+    get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode)
     

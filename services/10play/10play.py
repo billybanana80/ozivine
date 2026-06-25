@@ -6,6 +6,7 @@ import re
 import os
 import random
 from urllib.parse import urljoin  
+from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: 10Play Video Downloader
 #   Author: billybanana
@@ -134,6 +135,132 @@ def parse_master_variants(master_text: str, master_url: str):
     variants.sort(key=lambda v: v["height"], reverse=True)
     return variants
 
+def parse_m3u8_attributes(value: str):
+    attrs = {}
+    for match in re.finditer(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', value):
+        key = match.group(1)
+        raw_value = match.group(2).strip()
+        attrs[key] = raw_value.strip('"')
+    return attrs
+
+def get_master_streams(master_url: str):
+    try:
+        text = fetch_text(master_url)
+    except Exception:
+        return []
+
+    streams = []
+    last_attrs = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("#EXT-X-STREAM-INF:"):
+            last_attrs = parse_m3u8_attributes(s.split(":", 1)[1])
+            continue
+
+        if not last_attrs or not s or s.startswith("#"):
+            continue
+
+        bandwidth = last_attrs.get("BANDWIDTH") or last_attrs.get("AVERAGE-BANDWIDTH")
+        resolution = last_attrs.get("RESOLUTION") or "-"
+        codecs = last_attrs.get("CODECS") or "unknown codecs"
+        bitrate = f"{int(bandwidth) // 1000} Kbps" if bandwidth and bandwidth.isdigit() else "unknown bitrate"
+        streams.append({
+            "type": "Vid",
+            "resolution": resolution,
+            "bitrate": bitrate,
+            "codec": codecs,
+            "lang": "-",
+        })
+        last_attrs = None
+
+    return sorted(streams, key=stream_sort_key)
+
+def stream_sort_key(stream):
+    type_order = {"Vid": 0, "Aud": 1, "Sub": 2}
+    height = 0
+    bitrate = 0
+
+    resolution_match = re.search(r"x(\d+)", stream["resolution"])
+    if resolution_match:
+        height = int(resolution_match.group(1))
+
+    bitrate_match = re.search(r"(\d+)", stream["bitrate"])
+    if bitrate_match:
+        bitrate = int(bitrate_match.group(1))
+
+    return (type_order.get(stream["type"], 9), -height, -bitrate, stream["codec"], stream["lang"])
+
+def print_streams(streams):
+    if not streams:
+        print(f"\n{bcolors.YELLOW}Available streams: {bcolors.ENDC}No streams found")
+        return
+
+    print(f"\n{bcolors.YELLOW}Available streams:{bcolors.ENDC}")
+    print(f"{'#':>3}  {'Type':<4} {'Resolution':<11} {'Bitrate':<16} {'Codec':<32} {'Lang':<6}")
+    print(f"{'--':>3}  {'----':<4} {'----------':<11} {'----------------':<16} {'--------------------------------':<32} {'------':<6}")
+    for index, stream in enumerate(streams, start=1):
+        print(
+            f"{index:>3}  "
+            f"{stream['type']:<4} "
+            f"{stream['resolution']:<11} "
+            f"{stream['bitrate']:<16} "
+            f"{stream['codec']:<32} "
+            f"{stream['lang']:<6}"
+        )
+
+def get_available_streams(master_url: str):
+    streams = [
+        {
+            "type": "Vid",
+            "resolution": "1920x1080",
+            "bitrate": "5000 Kbps",
+            "codec": "H.264",
+            "lang": "-",
+        }
+    ]
+    seen = {(stream["type"], stream["resolution"], stream["bitrate"], stream["codec"], stream["lang"]) for stream in streams}
+
+    for stream in get_master_streams(master_url):
+        stream_key = (stream["type"], stream["resolution"], stream["bitrate"], stream["codec"], stream["lang"])
+        if stream_key not in seen:
+            streams.append(stream)
+            seen.add(stream_key)
+
+    return sorted(streams, key=stream_sort_key)
+
+def build_action_master_m3u8(fhd_m3u8_file_path, master_m3u8_url, downloads_path):
+    try:
+        master_text = fetch_text(master_m3u8_url)
+    except Exception:
+        return None
+
+    fhd_filename = os.path.basename(fhd_m3u8_file_path)
+    base_name = os.path.splitext(fhd_filename)[0]
+    action_master_path = os.path.join(downloads_path, f"{base_name}_ozivine_master.m3u8")
+
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        '#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"',
+        fhd_filename,
+    ]
+
+    last_inf = None
+    for line in master_text.splitlines():
+        s = line.strip()
+        if s.startswith("#EXT-X-STREAM-INF:"):
+            last_inf = s
+            continue
+        if last_inf and s and not s.startswith("#"):
+            lines.append(last_inf)
+            lines.append(urljoin(master_m3u8_url, s))
+            last_inf = None
+
+    with open(action_master_path, "w", encoding="utf-8") as file:
+        file.write("\n".join(lines) + "\n")
+
+    return action_master_path
+
 def pick_best_variant(master_url: str) -> tuple[str, int] | tuple[None, None]:
     """
     Return (variant_url, height) for the best available rendition.
@@ -160,6 +287,9 @@ def replace_resolution_tag(save_name: str, new_height: int) -> str:
     # try to insert before ".10Play." or at end
     return re.sub(r"(\.10Play\.)", f".{new_height}p.\\1", save_name, count=1) \
            if ".10Play." in save_name else f"{save_name}.{new_height}p"
+
+def is_movie(video_data):
+    return str(video_data.get("genre", "")).lower() == "movies"
 
 ### End of Helpers ###
 
@@ -388,14 +518,71 @@ def format_file_name(video_data):
     return formatted_file_name
 
 # Function to format and display download command
-def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url):
+def cleanup_temp_m3u8(*m3u8_file_paths):
+    for m3u8_file_path in m3u8_file_paths:
+        if not m3u8_file_path or not os.path.exists(m3u8_file_path):
+            continue
+        try:
+            os.remove(m3u8_file_path)
+            print(f"{bcolors.OKGREEN}Deleted temporary m3u8 file:{bcolors.ENDC} {m3u8_file_path}")
+        except Exception as e:
+            print(f"{bcolors.WARNING}Could not delete m3u8 file: {e}{bcolors.ENDC}")
+
+def expected_output_exists(downloads_path, save_name):
+    candidates = [
+        os.path.join(downloads_path, f"{save_name}.mkv"),
+        os.path.join(downloads_path, f"{save_name}.MUX.mkv"),
+    ]
+    return any(os.path.exists(path) for path in candidates)
+
+def display_info(m3u8_file_path, formatted_file_name, master_m3u8_url, original_variant_url):
+    print(f"{bcolors.LIGHTBLUE}FHD M3U8 File: {bcolors.ENDC}{m3u8_file_path}")
+    print_streams(get_available_streams(master_m3u8_url))
+    print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
+    cleanup_temp_m3u8(m3u8_file_path)
+
+def build_download_command(source, downloads_path, save_name, mode="auto"):
+    selectors = "" if mode == "interactive" else "--select-video best --select-audio best --select-subtitle all "
+    download_command = (
+        f'N_m3u8DL-RE "{source}" '
+        f'--ad-keyword redirector.googlevideo.com '
+        f'{selectors}'
+        f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{save_name}"'
+    )
+    return append_downloader_proxy(download_command)
+
+def display_master_info(master_m3u8_url, formatted_file_name):
+    print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{master_m3u8_url}")
+    print_streams(get_master_streams(master_m3u8_url))
+    print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
+
+def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto"):
+    print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{master_m3u8_url}")
+    download_command = build_download_command(master_m3u8_url, downloads_path, formatted_file_name, mode)
+    print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
+    print(mask_proxy_command(download_command))
+
+    user_input = input("Do you wish to download? Y or N: ").strip().lower()
+    if user_input == 'y':
+        subprocess.run(download_command, shell=True)
+
+def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto"):
     use_source = m3u8_file_path   # default to local file
     final_save_name = formatted_file_name
+    action_master_path = None
 
     print(f"{bcolors.LIGHTBLUE}FHD M3U8 File: {bcolors.ENDC}{m3u8_file_path}")
 
+    if mode == "interactive":
+        action_master_path = build_action_master_m3u8(m3u8_file_path, master_m3u8_url, downloads_path)
+        if action_master_path:
+            use_source = action_master_path
+            print(f"{bcolors.LIGHTBLUE}ACTION M3U8 File: {bcolors.ENDC}{action_master_path}")
+        else:
+            print(f"{bcolors.WARNING}Could not build action master; using FHD media playlist directly.{bcolors.ENDC}")
+
     # Pre-flight probe: if it looks bad, pre-switch to master best
-    preflight_failed = not probe_segment_ok(m3u8_file_path)
+    preflight_failed = False if mode == "interactive" else not probe_segment_ok(m3u8_file_path)
     if preflight_failed:
         print(f"{bcolors.WARNING}First/middle/end segment probe failed — falling back to best available from master.{bcolors.ENDC}")
         best_url, best_h = pick_best_variant(master_m3u8_url)
@@ -409,20 +596,22 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
             print(f"{bcolors.FAIL}Could not pick a fallback variant from master.{bcolors.ENDC}")
 
     # Build command
-    download_command = (
-        f'N_m3u8DL-RE "{use_source}" '
-        f'--ad-keyword redirector.googlevideo.com '
-        f'--select-video best --select-audio best --select-subtitle all '
-        f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{final_save_name}"'
-    )
+    selectors = "" if mode == "interactive" else "--select-video best --select-audio best --select-subtitle all "
+    download_command = build_download_command(use_source, downloads_path, final_save_name, mode)
+    download_command = append_downloader_proxy(download_command)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-    print(download_command)
+    print(mask_proxy_command(download_command))
 
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == 'y':
         # First attempt
         result = subprocess.run(download_command, shell=True)
         if result.returncode != 0 and not preflight_failed:
+            if expected_output_exists(downloads_path, final_save_name):
+                print(f"{bcolors.WARNING}Downloader returned an error after output was created; skipping fallback.{bcolors.ENDC}")
+                cleanup_temp_m3u8(action_master_path, m3u8_file_path)
+                return
+
             # Runtime fallback: if we *thought* the playlist was fine but the tool failed (404, etc.)
             print(f"{bcolors.WARNING}Downloader failed; attempting fallback from master...{bcolors.ENDC}")
             best_url, best_h = pick_best_variant(master_m3u8_url)
@@ -431,22 +620,18 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
                 fb_cmd = (
                     f'N_m3u8DL-RE "{best_url}" '
                     f'--ad-keyword redirector.googlevideo.com '
-                    f'--select-video best --select-audio best --select-subtitle all '
+                    f'{selectors}'
                     f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{fallback_save}"'
                 )
+                fb_cmd = append_downloader_proxy(fb_cmd)
                 print(f"{bcolors.YELLOW}FALLBACK DOWNLOAD COMMAND:{bcolors.ENDC}")
-                print(fb_cmd)
+                print(mask_proxy_command(fb_cmd))
                 subprocess.run(fb_cmd, shell=True)
             else:
                 print(f"{bcolors.FAIL}Fallback failed: could not parse master playlist.{bcolors.ENDC}")
 
     # Always delete local .m3u8
-    if os.path.exists(m3u8_file_path):
-        try:
-            os.remove(m3u8_file_path)
-            print(f"{bcolors.OKGREEN}Deleted temporary m3u8 file:{bcolors.ENDC} {m3u8_file_path}")
-        except Exception as e:
-            print(f"{bcolors.WARNING}Could not delete m3u8 file: {e}{bcolors.ENDC}")
+    cleanup_temp_m3u8(action_master_path, m3u8_file_path)
 
 
 # Function to extract video ID from URL
@@ -454,8 +639,28 @@ def extract_video_id(url):
     match = re.search(r'/([^/]+)/?$', url)
     return match.group(1) if match else None
 
+def resolve_video_id_from_page(url):
+    try:
+        response = requests.get(url, timeout=20, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        return None
+
+    html = response.text
+    patterns = [
+        r'"urlCode"\s*:\s*"(tpv[0-9a-z]+)"',
+        r'data-urlcode="(tpv[0-9a-z]+)"',
+        r'/episodes/[^"]+/(tpv[0-9a-z]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+    return None
+
 # Main logic
-def main(video_url, downloads_path, credentials):
+def main(video_url, downloads_path, credentials, mode="auto"):
     username, password = credentials.split(':')
     video_id = extract_video_id(video_url)
     
@@ -465,9 +670,28 @@ def main(video_url, downloads_path, credentials):
 
     token = get_bearer_token(username, password)
     if token:
-        print(f"{bcolors.OKGREEN}Login successful, token obtained{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ Login successful, token obtained{bcolors.ENDC}")
+        if not video_id.lower().startswith("tpv"):
+            resolved_video_id = resolve_video_id_from_page(video_url)
+            if resolved_video_id:
+                video_id = resolved_video_id
+                print(f"{bcolors.OKGREEN}✅ Resolved page to video ID: {video_id}{bcolors.ENDC}")
+
         manifest_url, video_data = extract_video_details(video_id, token, video_url)
         if manifest_url and video_data:
+            formatted_file_name = format_file_name(video_data)
+
+            if is_movie(video_data):
+                best_url, best_h = pick_best_variant(manifest_url)
+                if best_url and best_h:
+                    formatted_file_name = replace_resolution_tag(formatted_file_name, best_h)
+
+                if mode == "info":
+                    display_master_info(manifest_url, formatted_file_name)
+                else:
+                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode)
+                return
+
             variant_url = download_and_select_variant(manifest_url)
             if variant_url:
                 local_m3u8_file, original_variant_url = modify_and_save_m3u8(variant_url, downloads_path)
@@ -475,9 +699,10 @@ def main(video_url, downloads_path, credentials):
                     # Print the original 960x540 URL and the local path
                     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{manifest_url}")
                     print(f"{bcolors.LIGHTBLUE}SD M3U8 URL: {bcolors.ENDC}{original_variant_url}")
-                    
-                    formatted_file_name = format_file_name(video_data)
-                    display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url)
+                    if mode == "info":
+                        display_info(local_m3u8_file, formatted_file_name, manifest_url, original_variant_url)
+                    else:
+                        display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url, mode)
                 else:
                     print(f"{bcolors.FAIL}Failed to modify and save the variant M3U8{bcolors.ENDC}")
             else:

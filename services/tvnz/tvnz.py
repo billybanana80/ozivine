@@ -13,6 +13,7 @@ import requests
 import urllib3
 import yaml
 
+from services.proxy import append_downloader_proxy, mask_proxy_command
 from pywidevine.cdm import Cdm
 from pywidevine.device import Device
 from pywidevine.pssh import PSSH
@@ -223,7 +224,7 @@ class TVNZAPI:
         if missing:
             raise ValueError(f"Missing required local storage field(s): {', '.join(missing)}")
 
-        print(f"{bcolors.OKGREEN}Loaded TVNZ local storage tokens{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ Loaded TVNZ local storage tokens{bcolors.ENDC}")
 
     def refresh_user_tokens_if_needed(self):
         """
@@ -278,7 +279,7 @@ class TVNZAPI:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(raw, f, indent=4)
 
-                print(f"{bcolors.OKGREEN}Refreshed tokens written back to local storage JSON{bcolors.ENDC}")
+                print(f"{bcolors.OKGREEN}✅ Refreshed tokens written back to local storage JSON{bcolors.ENDC}")
         except Exception as e:
             print(f"{bcolors.YELLOW}Token refreshed, but could not update local storage file: {e}{bcolors.ENDC}")
 
@@ -305,7 +306,7 @@ class TVNZAPI:
             raise ConnectionError(f"Failed to get contact ID: {data}")
 
         self.contact_id = data["GetContactResponseMessage"]["contactMessage"][0]["contactID"]
-        print(f"{bcolors.OKGREEN}Contact ID obtained{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ Contact ID obtained{bcolors.ENDC}")
 
     def get_entitlements(self):
         headers = {
@@ -337,7 +338,7 @@ class TVNZAPI:
         if not self.xauthorization:
             raise ValueError(f"x-authorization token missing: {data}")
 
-        print(f"{bcolors.OKGREEN}Entitlement token obtained{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ Entitlement token obtained{bcolors.ENDC}")
 
     def get_oauth_token(self):
         headers = {
@@ -362,7 +363,7 @@ class TVNZAPI:
         if not self.oauth_token:
             raise ValueError(f"OAuth token missing: {data}")
 
-        print(f"{bcolors.OKGREEN}OAuth token obtained{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ OAuth token obtained{bcolors.ENDC}")
 
     def register_app(self):
         headers = {
@@ -388,7 +389,7 @@ class TVNZAPI:
         if not self.secret:
             raise ValueError(f"App registration secret missing: {data}")
 
-        print(f"{bcolors.OKGREEN}App registered{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}✅ App registered{bcolors.ENDC}")
 
     def authenticate(self):
         self.load_local_storage()
@@ -608,6 +609,55 @@ class TVNZAPI:
             return "720p"
         return "SD"
 
+    def get_mpd_streams(self, url_mpd):
+        response = self.session.get(url_mpd, timeout=30)
+        response.raise_for_status()
+
+        root = ET.fromstring(response.content)
+        streams = []
+
+        for adaptation_set in root.iter():
+            if not adaptation_set.tag.endswith("AdaptationSet"):
+                continue
+
+            content_type = (adaptation_set.attrib.get("contentType") or "").lower()
+            mime_type = (adaptation_set.attrib.get("mimeType") or "").lower()
+            lang = adaptation_set.attrib.get("lang") or "-"
+
+            for representation in adaptation_set:
+                if not representation.tag.endswith("Representation"):
+                    continue
+
+                rep_mime_type = (representation.attrib.get("mimeType") or "").lower()
+                rep_content = f"{content_type} {mime_type} {rep_mime_type}"
+                codecs = representation.attrib.get("codecs") or adaptation_set.attrib.get("codecs") or "unknown codecs"
+                bandwidth = representation.attrib.get("bandwidth")
+                bitrate = f"{int(bandwidth) // 1000} Kbps" if bandwidth and bandwidth.isdigit() else "unknown bitrate"
+                width = representation.attrib.get("width")
+                height = representation.attrib.get("height")
+
+                if "video" in rep_content or width or height:
+                    stream_type = "Vid"
+                    resolution = f"{width or '?'}x{height or '?'}"
+                elif "audio" in rep_content:
+                    stream_type = "Aud"
+                    resolution = "-"
+                elif "text" in rep_content or "subtitle" in rep_content or codecs.lower() in {"stpp", "wvtt"}:
+                    stream_type = "Sub"
+                    resolution = "-"
+                else:
+                    continue
+
+                streams.append({
+                    "type": stream_type,
+                    "resolution": resolution,
+                    "bitrate": bitrate,
+                    "codec": codecs,
+                    "lang": lang,
+                })
+
+        return sorted(streams, key=stream_sort_key)
+
 
 def build_filename(video, resolution):
     show_title = first_name(video.get("lostl")) or first_name(video.get("lok")) or "TVNZ"
@@ -628,8 +678,55 @@ def build_filename(video, resolution):
 
     return f"{name}.{resolution}.TVNZ.WEB-DL.AAC2.0.H.264"
 
+def stream_sort_key(stream):
+    type_order = {"Vid": 0, "Aud": 1, "Sub": 2}
+    height = 0
+    bitrate = 0
 
-def get_download_command(video_url):
+    resolution_match = re.search(r"x(\d+)", stream["resolution"])
+    if resolution_match:
+        height = int(resolution_match.group(1))
+
+    bitrate_match = re.search(r"(\d+)", stream["bitrate"])
+    if bitrate_match:
+        bitrate = int(bitrate_match.group(1))
+
+    return (type_order.get(stream["type"], 9), -height, -bitrate, stream["codec"], stream["lang"])
+
+def print_streams(streams):
+    if not streams:
+        print(f"\n{bcolors.YELLOW}Available streams: {bcolors.ENDC}No streams found")
+        return
+
+    print(f"\n{bcolors.YELLOW}Available streams:{bcolors.ENDC}")
+    print(f"{'#':>3}  {'Type':<4} {'Resolution':<11} {'Bitrate':<16} {'Codec':<18} {'Lang':<6}")
+    print(f"{'--':>3}  {'----':<4} {'----------':<11} {'----------------':<16} {'------------------':<18} {'------':<6}")
+    for index, stream in enumerate(streams, start=1):
+        print(
+            f"{index:>3}  "
+            f"{stream['type']:<4} "
+            f"{stream['resolution']:<11} "
+            f"{stream['bitrate']:<16} "
+            f"{stream['codec']:<18} "
+            f"{stream['lang']:<6}"
+        )
+
+def build_download_command(mpd_url, formatted_file_name, keys, mode="auto"):
+    selectors = "" if mode == "interactive" else '--select-video best --select-audio best -da role="Description" --select-subtitle all '
+    download_command = (
+        f'N_m3u8DL-RE "{mpd_url}" '
+        f'{selectors}'
+        f'-mt -M format=mkv '
+        f'--save-name "{formatted_file_name}" '
+        f'--save-dir "{DOWNLOAD_DIR}" '
+    )
+
+    if keys:
+        download_command += "--key " + " --key ".join(keys)
+
+    return append_downloader_proxy(download_command)
+
+def get_download_command(video_url, mode="auto"):
     api = TVNZAPI()
     api.authenticate()
 
@@ -652,31 +749,27 @@ def get_download_command(video_url):
     for key in keys:
         print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
 
-    download_command = (
-        f'N_m3u8DL-RE "{mpd_url}" '
-        f'--select-video best --select-audio best -da role="Description" --select-subtitle all '
-        f'-mt -M format=mkv '
-        f'--save-name "{formatted_file_name}" '
-        f'--save-dir "{DOWNLOAD_DIR}" '
-    )
+    if mode == "info":
+        print_streams(api.get_mpd_streams(mpd_url))
+        print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
+        return
 
-    if keys:
-        download_command += "--key " + " --key ".join(keys)
+    download_command = build_download_command(mpd_url, formatted_file_name, keys, mode)
 
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-    print(download_command)
+    print(mask_proxy_command(download_command))
 
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == "y":
         subprocess.run(download_command, shell=True)
 
 
-def main(video_url, downloads_path, wvd_device_path, local_storage_path):
+def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="auto"):
     global DOWNLOAD_DIR, WVD_DEVICE_PATH, LOCAL_STORAGE_PATH
     
     DOWNLOAD_DIR = downloads_path
     WVD_DEVICE_PATH = wvd_device_path
     LOCAL_STORAGE_PATH = local_storage_path
 
-    get_download_command(video_url)
+    get_download_command(video_url, mode)
 
