@@ -17,6 +17,7 @@
 - [x] Cookie support where required
 - [x] Login credential support where required
 - [x] Optional proxy support for Australian and New Zealand services
+- [x] Info and action modes for previewing or manually selecting available streams
 - [x] Supported sites: ABC iView, 7Plus, 9Now, 10Play, SBS On Demand, ThreeNow, and TVNZ
 
 ## Requirements
@@ -262,6 +263,34 @@ You can choose `Y` to download, choose `N` to skip, or copy the printed command 
 
 > [!TIP]
 > See `N_m3u8DL-RE --morehelp select-video/audio/subtitle` for possible selection patterns.
+
+### Download Modes
+
+Ozivine has three download modes:
+
+| Mode | Flags | Behaviour |
+| --- | --- | --- |
+| Auto | none | Builds the default best-quality command and asks whether to download. |
+| Info | `--info` or `-i` | Shows available streams and the suggested filename without downloading. |
+| Action | `--action` or `-a` | Builds a command without automatic stream selectors so `N_m3u8DL-RE` can prompt for manual choices. |
+
+Examples:
+
+```powershell
+python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10" -i
+python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10" -a
+```
+
+The same flags can be entered after the URL when using the interactive prompt:
+
+```text
+Enter the video URL: https://www.9now.com.au/paramedics/season-5/episode-10 -i
+Enter the video URL: https://www.9now.com.au/paramedics/season-5/episode-10 -a
+```
+
+Info mode is useful for checking available resolutions, audio tracks, subtitles, keys, and the generated filename before starting a download.
+
+Action mode is useful when you want to choose a lower resolution, alternate audio stream, or subtitle track manually. The generated filename is still based on Ozivine's default/best-quality expectation, so manually choosing a lower stream may require renaming the file afterward.
 
 ## TVNZ Local Storage
 
