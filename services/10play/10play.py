@@ -1,11 +1,15 @@
 import requests
 import datetime as dt
 import base64
+import json
 import subprocess
 import re
 import os
 import random
 from urllib.parse import urljoin  
+import yaml
+from colors import bcolors
+import icons
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: 10Play Video Downloader
@@ -19,21 +23,6 @@ from services.proxy import append_downloader_proxy, mask_proxy_command
 #   1. Extract Video ID: Parses the 10Play video URL to extract the video id and then fetches the show/movie info from the 10Play API.
 #   2. Print Download Information: Outputs the M3U8 URL required for downloading the video content.
 #   3. Note: this script functions for AES_128 encrypted video files only.
-
-# Formatting for output
-class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    LIGHTBLUE = '\033[94m'
-    YELLOW = '\033[93m'
-    ORANGE = '\033[93m'
 
 ### Helpers ###
 
@@ -208,6 +197,169 @@ def print_streams(streams):
             f"{stream['lang']:<6}"
         )
 
+def collect_external_subtitles(master_url):
+    try:
+        text = fetch_text(master_url)
+    except Exception:
+        return []
+
+    subtitles = []
+    seen_urls = set()
+    for line in text.splitlines():
+        if "#EXT-X-MEDIA:" not in line:
+            continue
+
+        attrs = parse_m3u8_attributes(line.split(":", 1)[1])
+        media_type = (attrs.get("TYPE") or "").upper()
+        uri = attrs.get("URI")
+        if media_type not in {"SUBTITLES", "CLOSED-CAPTIONS"} or not uri:
+            continue
+
+        subtitle_url = urljoin(master_url, uri)
+        if subtitle_url in seen_urls:
+            continue
+
+        seen_urls.add(subtitle_url)
+        subtitles.append({
+            "url": subtitle_url,
+            "language": (attrs.get("LANGUAGE") or "und").lower(),
+            "name": attrs.get("NAME") or attrs.get("LANGUAGE") or "Subtitle",
+            "kind": media_type.lower(),
+            "extension": "srt",
+        })
+
+    return subtitles
+
+def print_external_subtitles(subtitles):
+    if not subtitles:
+        return
+
+    print(f"\n{bcolors.YELLOW}External subtitles:{bcolors.ENDC}")
+    print(f"{'#':>3}  {'Lang':<6} {'Kind':<15} {'Format':<7} {'Name':<20}")
+    print(f"{'--':>3}  {'------':<6} {'---------------':<15} {'-------':<7} {'--------------------':<20}")
+    for index, subtitle in enumerate(subtitles, start=1):
+        print(
+            f"{index:>3}  "
+            f"{subtitle.get('language', '-'):<6} "
+            f"{subtitle.get('kind', '-'):<15} "
+            f"{subtitle.get('extension', '-'):<7} "
+            f"{subtitle.get('name', '-'):<20}"
+        )
+
+def extract_vtt_cues(vtt_text):
+    text = vtt_text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if "-->" in line:
+            return "\n".join(lines[index:]).strip()
+    return ""
+
+def download_vtt_playlist(subtitle_url):
+    try:
+        playlist = fetch_text(subtitle_url, timeout=20)
+    except Exception:
+        return None
+
+    parts = []
+    for line in playlist.splitlines():
+        segment = line.strip()
+        if not segment or segment.startswith("#"):
+            continue
+
+        try:
+            segment_text = fetch_text(urljoin(subtitle_url, segment), timeout=20)
+        except Exception:
+            continue
+
+        cues = extract_vtt_cues(segment_text)
+        if cues:
+            parts.append(cues)
+
+    if not parts:
+        return None
+
+    return "WEBVTT\n\n" + "\n\n".join(parts).strip() + "\n"
+
+def vtt_timestamp_to_srt(timestamp):
+    return timestamp.replace(".", ",")
+
+def vtt_to_srt(vtt_text):
+    text = vtt_text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    cues = []
+    current = []
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                cues.append(current)
+                current = []
+            continue
+        if stripped == "WEBVTT" or stripped.startswith(("NOTE", "STYLE", "REGION", "X-TIMESTAMP-MAP")):
+            continue
+        current.append(stripped)
+
+    if current:
+        cues.append(current)
+
+    srt_blocks = []
+    for cue in cues:
+        timing_index = next((idx for idx, line in enumerate(cue) if "-->" in line), None)
+        if timing_index is None:
+            continue
+
+        timing = cue[timing_index]
+        match = re.match(
+            r"(?P<start>\d{2}:\d{2}:\d{2}\.\d{3})\s+-->\s+(?P<end>\d{2}:\d{2}:\d{2}\.\d{3})",
+            timing,
+        )
+        if not match:
+            continue
+
+        text_lines = cue[timing_index + 1:]
+        if not text_lines:
+            continue
+
+        srt_blocks.append(
+            f"{len(srt_blocks) + 1}\n"
+            f"{vtt_timestamp_to_srt(match.group('start'))} --> {vtt_timestamp_to_srt(match.group('end'))}\n"
+            f"{chr(10).join(text_lines)}"
+        )
+
+    if not srt_blocks:
+        return None
+
+    return "\n\n".join(srt_blocks) + "\n"
+
+def subtitle_filename(base_name, subtitle, index, used_names):
+    language = re.sub(r"[^A-Za-z0-9]+", "", subtitle.get("language") or "und") or "und"
+    extension = subtitle.get("extension") or "vtt"
+    name = f"{base_name}.{language}.{extension}"
+    if name in used_names:
+        name = f"{base_name}.{language}.{index}.{extension}"
+    used_names.add(name)
+    return name
+
+def save_external_subtitles(subtitles, downloads_path, formatted_file_name):
+    if not subtitles:
+        return
+
+    os.makedirs(downloads_path, exist_ok=True)
+    used_names = set()
+    for index, subtitle in enumerate(subtitles, start=1):
+        print(f"{bcolors.OKCYAN}{icons.ICON_WAITING} Processing subtitle:{bcolors.ENDC} {subtitle.get('language', 'und')} {subtitle.get('name', 'Subtitle')}")
+        vtt_content = download_vtt_playlist(subtitle["url"])
+        content = vtt_to_srt(vtt_content or "")
+        if not content:
+            print(f"{bcolors.WARNING}Subtitle skipped: no usable cues found{bcolors.ENDC}")
+            continue
+
+        filename = subtitle_filename(formatted_file_name, subtitle, index, used_names)
+        path = os.path.join(downloads_path, filename)
+        with open(path, "w", encoding="utf-8-sig", newline="") as file:
+            file.write(content)
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Subtitle saved:{bcolors.ENDC} {path}")
+
 def get_available_streams(master_url: str):
     streams = [
         {
@@ -293,6 +445,8 @@ def is_movie(video_data):
 
 ### End of Helpers ###
 
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml"))
+
 # URLs and Headers
 login_url = 'https://10play.com.au/api/user/auth'
 headers = {
@@ -303,8 +457,86 @@ headers = {
     'Referer': 'https://10play.com.au/'
 }
 
-# Function to get bearer token
-def get_bearer_token(username, password):
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
+
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def save_config(config):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
+
+
+def ensure_10play_cache(config):
+    config.setdefault("credentials", {})
+    config.setdefault("10play", {})
+    config["10play"].setdefault("cache", {})
+    config["10play"]["cache"].setdefault("login", {})
+    return config
+
+
+def parse_10play_credentials(credentials):
+    creds = (credentials or "").strip()
+    if not creds or ":" not in creds:
+        raise ValueError("Missing 10Play credentials. Expected username:password")
+
+    username, password = creds.split(":", 1)
+    username = username.strip()
+    password = password.strip()
+
+    if not username or not password:
+        raise ValueError("Invalid 10Play credentials. Expected username:password")
+
+    return username, password
+
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed
+    except Exception:
+        return None
+
+
+def jwt_expiry_utc(token):
+    try:
+        raw_token = token.replace("Bearer ", "", 1).strip()
+        parts = raw_token.split(".")
+        if len(parts) != 3:
+            return None
+
+        payload = parts[1]
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8")
+        data = json.loads(decoded)
+        exp = data.get("exp")
+        if not exp:
+            return None
+        return dt.datetime.fromtimestamp(exp, tz=dt.timezone.utc)
+    except Exception:
+        return None
+
+
+def token_is_valid(token, expiry, buffer_minutes=5):
+    if not token or not expiry:
+        return False
+
+    expiry_dt = parse_iso_datetime(expiry)
+    if not expiry_dt:
+        return False
+
+    now = dt.datetime.now(dt.timezone.utc)
+    return expiry_dt > now + dt.timedelta(minutes=buffer_minutes)
+
+
+def login_10play(username, password):
     timestamp = dt.datetime.now().strftime('%Y%m%d000000')
     auth_header = base64.b64encode(timestamp.encode('ascii')).decode('ascii')
     login_payload = {'email': username, 'password': password}
@@ -315,8 +547,50 @@ def get_bearer_token(username, password):
     if response.status_code == 200:
         data = response.json()
         if 'jwt' in data:
-            return 'Bearer ' + data['jwt']['accessToken']
+            token = 'Bearer ' + data['jwt']['accessToken']
+            expiry_dt = jwt_expiry_utc(token)
+            return {
+                "token": token,
+                "expiry": expiry_dt.isoformat() if expiry_dt else "",
+            }
     return None
+
+
+def get_bearer_token(config, credentials):
+    config = ensure_10play_cache(config)
+    cache = config["10play"]["cache"]["login"]
+
+    cached_token = cache.get("token", "")
+    cached_expiry = cache.get("expiry", "")
+    repaired_cache = False
+
+    if cached_token and not cached_expiry:
+        expiry_dt = jwt_expiry_utc(cached_token)
+        if expiry_dt:
+            cached_expiry = expiry_dt.isoformat()
+            cache["expiry"] = cached_expiry
+            repaired_cache = True
+
+    if token_is_valid(cached_token, cached_expiry):
+        if repaired_cache:
+            save_config(config)
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Using cached token{bcolors.ENDC}")
+        return cached_token
+
+    username, password = parse_10play_credentials(credentials)
+    print(f"{bcolors.OKCYAN}{icons.ICON_INFO} Cached token missing/expired, logging in...{bcolors.ENDC}")
+
+    login_data = login_10play(username, password)
+    if not login_data:
+        return None
+
+    cache["token"] = login_data["token"]
+    expiry_dt = jwt_expiry_utc(login_data["token"])
+    cache["expiry"] = login_data["expiry"] or (expiry_dt.isoformat() if expiry_dt else "")
+    save_config(config)
+
+    print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Token cache updated{bcolors.ENDC}")
+    return login_data["token"]
 
 
 # Function to build authorization headers
@@ -344,7 +618,7 @@ def extract_video_details(video_id, token, episode_url):
     # 1) Get the video doc 
     response = requests.get(video_api_url, headers=auth_headers, timeout=20)
     if response.status_code != 200:
-        print(f"{bcolors.FAIL}Failed to fetch video details ({response.status_code}){bcolors.ENDC}")
+        print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Failed to fetch video details ({response.status_code}){bcolors.ENDC}")
         return None, None
 
     video_data = response.json()
@@ -353,7 +627,7 @@ def extract_video_details(video_id, token, episode_url):
     playback_url = f"https://10play.com.au/api/v1/videos/playback/{video_id}?platform=tizen"
     playback_response = requests.get(playback_url, headers=auth_headers, timeout=20)
     if playback_response.status_code != 200:
-        print(f"{bcolors.FAIL}Playback endpoint failed ({playback_response.status_code}){bcolors.ENDC}")
+        print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Playback endpoint failed ({playback_response.status_code}){bcolors.ENDC}")
         return None, None
 
     # Debug only # print(f"Playback status: {playback_response.status_code}")
@@ -362,7 +636,7 @@ def extract_video_details(video_id, token, episode_url):
     # The signed DAI token lives in this response header:
     dai_auth = playback_response.headers.get("x-dai-auth")
     if not dai_auth:
-        print(f"{bcolors.FAIL}Missing x-dai-auth header on playback response{bcolors.ENDC}")
+        print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Missing x-dai-auth header on playback response{bcolors.ENDC}")
         return None, None
 
     playback_data = playback_response.json()
@@ -381,10 +655,10 @@ def extract_video_details(video_id, token, episode_url):
         if manifest:
             return manifest, video_data
         else:
-            print(f"{bcolors.FAIL}Failed to resolve stream manifest from DAI details{bcolors.ENDC}")
+            print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Failed to resolve stream manifest from DAI details{bcolors.ENDC}")
             return None, None
 
-    print(f"{bcolors.FAIL}Missing videoId or contentSourceId in playback data{bcolors.ENDC}")
+    print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Missing videoId or contentSourceId in playback data{bcolors.ENDC}")
     return None, None
 
 
@@ -524,9 +798,9 @@ def cleanup_temp_m3u8(*m3u8_file_paths):
             continue
         try:
             os.remove(m3u8_file_path)
-            print(f"{bcolors.OKGREEN}Deleted temporary m3u8 file:{bcolors.ENDC} {m3u8_file_path}")
+            print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Deleted temporary m3u8 file:{bcolors.ENDC} {m3u8_file_path}")
         except Exception as e:
-            print(f"{bcolors.WARNING}Could not delete m3u8 file: {e}{bcolors.ENDC}")
+            print(f"{bcolors.WARNING}{icons.ICON_WARNING} Could not delete m3u8 file: {e}{bcolors.ENDC}")
 
 def expected_output_exists(downloads_path, save_name):
     candidates = [
@@ -535,9 +809,10 @@ def expected_output_exists(downloads_path, save_name):
     ]
     return any(os.path.exists(path) for path in candidates)
 
-def display_info(m3u8_file_path, formatted_file_name, master_m3u8_url, original_variant_url):
+def display_info(m3u8_file_path, formatted_file_name, master_m3u8_url, original_variant_url, subtitles=None):
     print(f"{bcolors.LIGHTBLUE}FHD M3U8 File: {bcolors.ENDC}{m3u8_file_path}")
     print_streams(get_available_streams(master_m3u8_url))
+    print_external_subtitles(subtitles or [])
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
     cleanup_temp_m3u8(m3u8_file_path)
 
@@ -551,22 +826,30 @@ def build_download_command(source, downloads_path, save_name, mode="auto"):
     )
     return append_downloader_proxy(download_command)
 
-def display_master_info(master_m3u8_url, formatted_file_name):
+def display_master_info(master_m3u8_url, formatted_file_name, subtitles=None):
     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{master_m3u8_url}")
     print_streams(get_master_streams(master_m3u8_url))
+    print_external_subtitles(subtitles or [])
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
 
-def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto"):
+def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto", subtitles=None):
     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{master_m3u8_url}")
     download_command = build_download_command(master_m3u8_url, downloads_path, formatted_file_name, mode)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
+    print_external_subtitles(subtitles or [])
 
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == 'y':
-        subprocess.run(download_command, shell=True)
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
+        result = subprocess.run(download_command, shell=True)
+        if result.returncode == 0:
+            save_external_subtitles(subtitles or [], downloads_path, formatted_file_name)
+            print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+    else:
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
-def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto"):
+def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto", subtitles=None):
     use_source = m3u8_file_path   # default to local file
     final_save_name = formatted_file_name
     action_master_path = None
@@ -601,15 +884,21 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
     download_command = append_downloader_proxy(download_command)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
+    print_external_subtitles(subtitles or [])
 
+    download_ok = False
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == 'y':
         # First attempt
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
         result = subprocess.run(download_command, shell=True)
+        download_ok = result.returncode == 0
         if result.returncode != 0 and not preflight_failed:
             if expected_output_exists(downloads_path, final_save_name):
                 print(f"{bcolors.WARNING}Downloader returned an error after output was created; skipping fallback.{bcolors.ENDC}")
+                save_external_subtitles(subtitles or [], downloads_path, final_save_name)
                 cleanup_temp_m3u8(action_master_path, m3u8_file_path)
+                print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
                 return
 
             # Runtime fallback: if we *thought* the playlist was fine but the tool failed (404, etc.)
@@ -626,12 +915,21 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
                 fb_cmd = append_downloader_proxy(fb_cmd)
                 print(f"{bcolors.YELLOW}FALLBACK DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(mask_proxy_command(fb_cmd))
-                subprocess.run(fb_cmd, shell=True)
+                fallback_result = subprocess.run(fb_cmd, shell=True)
+                if fallback_result.returncode == 0:
+                    final_save_name = fallback_save
+                    download_ok = True
             else:
                 print(f"{bcolors.FAIL}Fallback failed: could not parse master playlist.{bcolors.ENDC}")
+        if download_ok:
+            save_external_subtitles(subtitles or [], downloads_path, final_save_name)
+    else:
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
     # Always delete local .m3u8
     cleanup_temp_m3u8(action_master_path, m3u8_file_path)
+    if download_ok:
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
 
 
 # Function to extract video ID from URL
@@ -661,25 +959,25 @@ def resolve_video_id_from_page(url):
 
 # Main logic
 def main(video_url, downloads_path, credentials, mode="auto"):
-    username, password = credentials.split(':')
+    config = load_config()
     video_id = extract_video_id(video_url)
     
     if not video_id:
-        print(f"{bcolors.FAIL}Invalid URL. Please enter a valid 10Play video URL.{bcolors.ENDC}")
+        print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Invalid URL. Please enter a valid 10Play video URL.{bcolors.ENDC}")
         return
 
-    token = get_bearer_token(username, password)
+    token = get_bearer_token(config, credentials)
     if token:
-        print(f"{bcolors.OKGREEN}✅ Login successful, token obtained{bcolors.ENDC}")
         if not video_id.lower().startswith("tpv"):
             resolved_video_id = resolve_video_id_from_page(video_url)
             if resolved_video_id:
                 video_id = resolved_video_id
-                print(f"{bcolors.OKGREEN}✅ Resolved page to video ID: {video_id}{bcolors.ENDC}")
+                print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Resolved page to video ID: {video_id}{bcolors.ENDC}")
 
         manifest_url, video_data = extract_video_details(video_id, token, video_url)
         if manifest_url and video_data:
             formatted_file_name = format_file_name(video_data)
+            subtitles = collect_external_subtitles(manifest_url)
 
             if is_movie(video_data):
                 best_url, best_h = pick_best_variant(manifest_url)
@@ -687,9 +985,9 @@ def main(video_url, downloads_path, credentials, mode="auto"):
                     formatted_file_name = replace_resolution_tag(formatted_file_name, best_h)
 
                 if mode == "info":
-                    display_master_info(manifest_url, formatted_file_name)
+                    display_master_info(manifest_url, formatted_file_name, subtitles)
                 else:
-                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode)
+                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles)
                 return
 
             variant_url = download_and_select_variant(manifest_url)
@@ -700,14 +998,14 @@ def main(video_url, downloads_path, credentials, mode="auto"):
                     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{manifest_url}")
                     print(f"{bcolors.LIGHTBLUE}SD M3U8 URL: {bcolors.ENDC}{original_variant_url}")
                     if mode == "info":
-                        display_info(local_m3u8_file, formatted_file_name, manifest_url, original_variant_url)
+                        display_info(local_m3u8_file, formatted_file_name, manifest_url, original_variant_url, subtitles)
                     else:
-                        display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url, mode)
+                        display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url, mode, subtitles)
                 else:
-                    print(f"{bcolors.FAIL}Failed to modify and save the variant M3U8{bcolors.ENDC}")
+                    print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Failed to modify and save the variant M3U8{bcolors.ENDC}")
             else:
-                print(f"{bcolors.FAIL}Failed to find 960x540 variant{bcolors.ENDC}")
+                print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Failed to find 960x540 variant{bcolors.ENDC}")
         else:
-            print(f"{bcolors.FAIL}Failed to extract manifest URL{bcolors.ENDC}")
+            print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Failed to extract manifest URL{bcolors.ENDC}")
     else:
-        print(f"{bcolors.FAIL}Login failed{bcolors.ENDC}")
+        print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Login failed{bcolors.ENDC}")

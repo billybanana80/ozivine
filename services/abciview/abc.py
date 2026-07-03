@@ -3,8 +3,11 @@ import re
 import base64
 import binascii
 import subprocess
+import os
 from xml.etree import ElementTree as ET
 from pywidevine import Cdm, Device, PSSH
+from colors import bcolors
+import icons
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: ABC iView Video Downloader
@@ -20,15 +23,6 @@ from services.proxy import append_downloader_proxy, mask_proxy_command
 #   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
 #   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
 #   5. Note: this script functions for encrypted video files only (ABC iView files are all currently encrypted).
-
-# Define color formatting
-class bcolors:
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    ENDC = '\033[0m'
-    ORANGE = '\033[38;5;208m'
 
 def get_video_id(url):
     match = re.search(r'video/([A-Z0-9]+)', url)
@@ -201,6 +195,127 @@ def print_streams(streams):
             f"{stream['lang']:<6}"
         )
 
+def collect_subtitles(video_id):
+    data = get_video_data(video_id)
+    playlist = (data or {}).get("_embedded", {}).get("playlist", [])
+    program = next((item for item in playlist if item.get("type") == "program"), None)
+    if not program:
+        return []
+
+    captions = program.get("captions") or {}
+    url = captions.get("src-vtt")
+    if not url or str(captions.get("live", "0")) == "1":
+        return []
+
+    return [{
+        "url": url,
+        "language": "en",
+        "name": "English",
+        "kind": "captions",
+        "extension": "srt",
+    }]
+
+def print_external_subtitles(subtitles):
+    if not subtitles:
+        return
+
+    print(f"\n{bcolors.YELLOW}External subtitles:{bcolors.ENDC}")
+    print(f"{'#':>3}  {'Lang':<6} {'Kind':<10} {'Format':<7} {'Name':<20}")
+    print(f"{'--':>3}  {'------':<6} {'----------':<10} {'-------':<7} {'--------------------':<20}")
+    for index, subtitle in enumerate(subtitles, start=1):
+        print(
+            f"{index:>3}  "
+            f"{subtitle.get('language', '-'):<6} "
+            f"{subtitle.get('kind', '-'):<10} "
+            f"{subtitle.get('extension', '-'):<7} "
+            f"{subtitle.get('name', '-'):<20}"
+        )
+
+def vtt_timestamp_to_srt(timestamp):
+    return timestamp.replace(".", ",")
+
+def vtt_to_srt(vtt_text):
+    text = vtt_text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    cues = []
+    current = []
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                cues.append(current)
+                current = []
+            continue
+        if stripped == "WEBVTT" or stripped.startswith(("NOTE", "STYLE", "REGION", "X-TIMESTAMP-MAP")):
+            continue
+        current.append(stripped)
+
+    if current:
+        cues.append(current)
+
+    srt_blocks = []
+    for cue in cues:
+        timing_index = next((idx for idx, line in enumerate(cue) if "-->" in line), None)
+        if timing_index is None:
+            continue
+
+        timing = cue[timing_index]
+        match = re.match(
+            r"(?P<start>\d{2}:\d{2}:\d{2}\.\d{3})\s+-->\s+(?P<end>\d{2}:\d{2}:\d{2}\.\d{3})",
+            timing,
+        )
+        if not match:
+            continue
+
+        text_lines = cue[timing_index + 1:]
+        if not text_lines:
+            continue
+
+        srt_blocks.append(
+            f"{len(srt_blocks) + 1}\n"
+            f"{vtt_timestamp_to_srt(match.group('start'))} --> {vtt_timestamp_to_srt(match.group('end'))}\n"
+            f"{chr(10).join(text_lines)}"
+        )
+
+    if not srt_blocks:
+        return None
+
+    return "\n\n".join(srt_blocks) + "\n"
+
+def subtitle_filename(base_name, subtitle, index, used_names):
+    language = re.sub(r"[^A-Za-z0-9]+", "", subtitle.get("language") or "und") or "und"
+    extension = subtitle.get("extension") or "srt"
+    name = f"{base_name}.{language}.{extension}"
+    if name in used_names:
+        name = f"{base_name}.{language}.{index}.{extension}"
+    used_names.add(name)
+    return name
+
+def save_external_subtitles(subtitles, downloads_path, formatted_file_name):
+    if not subtitles:
+        return
+
+    os.makedirs(downloads_path, exist_ok=True)
+    used_names = set()
+    for index, subtitle in enumerate(subtitles, start=1):
+        print(f"{bcolors.OKCYAN}{icons.ICON_WAITING} Processing subtitle:{bcolors.ENDC} {subtitle.get('language', 'und')} {subtitle.get('name', 'Subtitle')}")
+        try:
+            response = requests.get(subtitle["url"], timeout=20)
+            response.raise_for_status()
+            content = vtt_to_srt(response.text)
+        except Exception:
+            content = None
+
+        if not content:
+            print(f"{bcolors.WARNING}Subtitle skipped: no usable cues found{bcolors.ENDC}")
+            continue
+
+        filename = subtitle_filename(formatted_file_name, subtitle, index, used_names)
+        path = os.path.join(downloads_path, filename)
+        with open(path, "w", encoding="utf-8-sig", newline="") as file:
+            file.write(content)
+        print(f"{bcolors.GREEN}{icons.ICON_SUCCESS} Subtitle saved:{bcolors.ENDC} {path}")
+
 # Function to get PSSH from MPD URL
 def extract_pssh(mpd_url):
     response = requests.get(mpd_url)
@@ -316,6 +431,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto"):
                     formatted_keys = format_keys(license_keys)
                     # Get formatted file name
                     formatted_file_name = get_show_info(video_id)
+                    subtitles = collect_subtitles(video_id)
                     
                     # Print the requested information
                     print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{mpd_url}")
@@ -326,17 +442,25 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto"):
 
                     if mode == "info":
                         print_streams(get_available_streams(candidates))
+                        print_external_subtitles(subtitles)
                         print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
                         return
 
                     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                     download_command = build_download_command(mpd_url, downloads_path, formatted_file_name, formatted_keys, mode)
                     print(mask_proxy_command(download_command))
+                    print_external_subtitles(subtitles)
                     
                     if download_command:
                         user_input = input("Do you wish to download? Y or N: ").strip().lower()
                         if user_input == 'y':
-                            subprocess.run(download_command, shell=True)
+                            print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
+                            result = subprocess.run(download_command, shell=True)
+                            if result.returncode == 0:
+                                save_external_subtitles(subtitles, downloads_path, formatted_file_name)
+                                print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+                        else:
+                            print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
                 else:
                     print("Failed to get license keys")
             else:

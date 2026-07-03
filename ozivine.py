@@ -6,7 +6,9 @@ from rich.console import Console
 from rich.padding import Padding
 from rich.text import Text
 from datetime import datetime
+from colors import bcolors
 from proxy_config import configure_proxy
+import icons
 
 #   Ozivine: Downloader for Australian & New Zealand FTA services
 #   Author: billybanana
@@ -21,7 +23,7 @@ from proxy_config import configure_proxy
 #   6. Proxy support for both Surfshark and NordVPN. You need to obtain the OpenVPN credentials from your VPN provider - these are not the same as your email/password account credentials.
 
 console = Console()
-__version__ = "3.0"  # Replace with the actual version
+__version__ = "3.1"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
@@ -45,15 +47,6 @@ def print_ascii_art(version=None):
     if version:
         return
     
-# Define color formatting
-class bcolors:
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    ENDC = '\033[0m'
-    ORANGE = '\033[38;5;208m'
-
 def load_config():
     with open('config.yaml', 'r') as file:
         return yaml.safe_load(file)
@@ -118,55 +111,55 @@ def main():
     if video_url.startswith("https://www.9now.com.au"):
         service_key = "9now"
         service_module = "services.9now.9now"
-        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 9Now{bcolors.ENDC}")
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating 9Now{bcolors.ENDC}")
         args = (video_url, downloads_path, wvd_device_path, mode)
     elif video_url.startswith("https://7plus.com.au"):
         service_key = "7plus"
         service_module = "services.7plus.7plus"
-        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 7Plus{bcolors.ENDC}")
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating 7Plus{bcolors.ENDC}")
         args = (video_url, downloads_path, wvd_device_path, cookies_path, mode)
     elif video_url.startswith("https://www.sbs.com.au"):
         service_key = "sbs"
         service_module = "services.sbs.sbs"
-        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating SBS{bcolors.ENDC}")
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating SBS{bcolors.ENDC}")
         args = (video_url, downloads_path, credentials.get("sbs"), mode)
     elif video_url.startswith("https://iview.abc.net.au"):
         service_key = "abciview"
         service_module = "services.abciview.abc"
-        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ABC iView{bcolors.ENDC}")
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating ABC iView{bcolors.ENDC}")
         args = (video_url, downloads_path, wvd_device_path, mode)
     elif video_url.startswith(("https://10play.com.au/", "https://10.com.au/")):
         service_key = "10play"
         service_module = "services.10play.10play"
-        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating 10{bcolors.ENDC}")
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating 10{bcolors.ENDC}")
         args = (video_url, downloads_path, credentials.get("10play"), mode) 
     elif video_url.startswith("https://www.tvnz.co.nz/"):
         service_key = "tvnz"
         service_module = "services.tvnz.tvnz"
-        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating TVNZ{bcolors.ENDC}")
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating TVNZ{bcolors.ENDC}")
 
         if not tvnz_local_storage:
-            print(f"{bcolors.RED}Missing config value: tvnz.local_storage{bcolors.ENDC}")
+            print(f"{bcolors.RED}{icons.ICON_FAILURE} Missing config value: tvnz.local_storage{bcolors.ENDC}")
             sys.exit(1)
 
         args = (video_url, downloads_path, wvd_device_path, tvnz_local_storage, mode) 
     elif video_url.startswith("https://www.threenow.co.nz"):
         service_key = "threenow"
         service_module = "services.threenow.threenow"
-        print(f"{bcolors.LIGHTBLUE}Ozivine..........initiating ThreeNow{bcolors.ENDC}")
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating ThreeNow{bcolors.ENDC}")
         args = (video_url, downloads_path, wvd_device_path, mode)                      
     else:
-        print(f"{bcolors.RED}Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, ABC iView, ThreeNow or TVNZ.{bcolors.ENDC}")
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10Play, SBS, ABC iView, ThreeNow or TVNZ.{bcolors.ENDC}")
         sys.exit(1)
 
     try:
         if mode != "auto" and service_key not in {"9now", "7plus", "sbs", "abciview", "10play", "tvnz", "threenow"}:
-            print(f"{bcolors.YELLOW}{mode} mode is not implemented for this service yet; using default service behavior.{bcolors.ENDC}")
+            print(f"{bcolors.YELLOW}{icons.ICON_FAILURE} {mode} mode is not implemented for this service yet; using default service behavior.{bcolors.ENDC}")
         configure_proxy(config, service_key)
         service = importlib.import_module(service_module)
         service.main(*args)
     except Exception as e:
-        print(f"{bcolors.RED}Error importing or running the service module: {e}{bcolors.ENDC}")
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Error importing or running the service module: {e}{bcolors.ENDC}")
 
 if __name__ == "__main__":
     main()

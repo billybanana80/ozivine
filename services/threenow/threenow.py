@@ -7,6 +7,8 @@ from pywidevine.pssh import PSSH
 import subprocess
 from datetime import datetime
 from urllib.parse import urljoin
+from colors import bcolors
+import icons
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: ThreeNow Video Downloader
@@ -37,23 +39,6 @@ BRIGHTCOVE_HEADERS = {
     "Origin": "https://www.threenow.co.nz",
     "Referer": "https://www.threenow.co.nz/"
 }
-
-# ANSI escape codes for colors
-class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    ORANGE = '\033[38;5;208m'
 
 def clean_title(value):
     value = re.sub(r'[,\-]', ' ', str(value or ""))
@@ -440,7 +425,12 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
 
             user_input = input("Do you wish to download? Y or N: ").strip().lower()
             if user_input == 'y':
-                subprocess.run(download_command, shell=True)
+                print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
+                result = subprocess.run(download_command, shell=True)
+                if result.returncode == 0:
+                    print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+            else:
+                print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
         else:
             # Handling DASH manifest
             try:
@@ -467,7 +457,12 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
 
                 user_input = input("Do you wish to download? Y or N: ").strip().lower()
                 if user_input == 'y':
-                    subprocess.run(download_command, shell=True)
+                    print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
+                    result = subprocess.run(download_command, shell=True)
+                    if result.returncode == 0:
+                        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+                else:
+                    print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
             except ValueError as e:
                 # Fallback to HLS if DASH content is not encrypted
                 for source in playback_info['sources']:
@@ -488,7 +483,12 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
 
                 user_input = input("Do you wish to download? Y or N: ").strip().lower()
                 if user_input == 'y':
-                    subprocess.run(download_command, shell=True)
+                    print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
+                    result = subprocess.run(download_command, shell=True)
+                    if result.returncode == 0:
+                        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+                else:
+                    print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
     except Exception as e:
         print(f"Error: {e}")
 

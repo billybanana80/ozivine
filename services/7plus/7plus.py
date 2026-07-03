@@ -1,4 +1,4 @@
-import requests
+﻿import requests
 import json
 import re
 import subprocess
@@ -10,9 +10,13 @@ from lxml import etree
 import base64
 import binascii
 import os
+import datetime as dt
+import yaml
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
+from colors import bcolors
 from services.proxy import append_downloader_proxy, mask_proxy_command
+import icons
 
 #   Ozivine: 7Plus Video Downloader
 #   Author: billybanana
@@ -28,38 +32,12 @@ from services.proxy import append_downloader_proxy, mask_proxy_command
 #   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
 #   5. Note: this script functions for both encrypted and non-encrypted video files.
 
-# === Debug print control ======================================================
-# Set DEBUG_ALL=True to re-enable ALL print() calls across this module.
-# Leave it False to silence everything except explicit _PRINT(...) calls below.
-import builtins
-DEBUG_ALL = False
-
-# Keep a handle to the real print
-_PRINT = builtins.print
-
-# Shadow print with a no-op when DEBUG_ALL is False
-if not DEBUG_ALL:
-    def print(*args, **kwargs):  # noqa: A001 - intentionally shadow built-in in this module
-        return
-# =============================================================================
-
-# Formatting for output
-class bcolors:
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    GREEN = '\033[92m'
-    ORANGE = '\033[38;5;208m'
+_PRINT = print
 
 # URLs and Headers
 BASE_URL = "https://7plus.com.au"
 PLATFORM_VERSION = "1.0.106518"
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml"))
 
 def _default_headers(referer_path="/", auth_token=None, conn_close=False):
     h = {
@@ -102,14 +80,146 @@ def _session_with_retries(total=3, backoff=0.5, pool_maxsize=20):
     s.mount("http://", adapter)
     return s
 
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
+
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+def save_config(config):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
+
+def ensure_7plus_cache(config):
+    config.setdefault("credentials", {})
+    config.setdefault("7plus", {})
+    config["7plus"].setdefault("cache", {})
+    config["7plus"]["cache"].setdefault("auth", {})
+    return config
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed
+    except Exception:
+        return None
+
+def jwt_expiry_utc(token):
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+
+        payload = parts[1]
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8")
+        data = json.loads(decoded)
+        exp = data.get("exp")
+        if not exp:
+            return None
+        return dt.datetime.fromtimestamp(exp, tz=dt.timezone.utc)
+    except Exception:
+        return None
+
+def token_is_valid(token, expiry, buffer_minutes=5):
+    if not token or not expiry:
+        return False
+
+    expiry_dt = parse_iso_datetime(expiry)
+    if not expiry_dt:
+        return False
+
+    return expiry_dt > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=buffer_minutes)
+
+def cache_7plus_auth(config, auth_data):
+    config = ensure_7plus_cache(config)
+    cache = config["7plus"]["cache"]["auth"]
+    token = auth_data.get("token") or ""
+    refresh_token = auth_data.get("refreshToken") or cache.get("refresh_token", "")
+    expiry_dt = None
+
+    if auth_data.get("exp"):
+        expiry_dt = dt.datetime.fromtimestamp(int(auth_data["exp"]), tz=dt.timezone.utc)
+    if not expiry_dt:
+        expiry_dt = jwt_expiry_utc(token)
+
+    cache["token"] = token
+    cache["refresh_token"] = refresh_token
+    cache["expiry"] = expiry_dt.isoformat() if expiry_dt else ""
+    save_config(config)
+    return token
+
+def refresh_7plus_auth_token(refresh_token):
+    if not refresh_token:
+        return None
+
+    response = requests.post(
+        "https://7plus.com.au/auth/refresh",
+        headers={
+            "User-Agent": _default_headers()["User-Agent"],
+            "Content-Type": "application/json",
+            "Origin": BASE_URL,
+            "Referer": BASE_URL,
+        },
+        data=json.dumps({"refreshToken": refresh_token, "platformId": "web", "regSource": "7plus"}),
+        timeout=(8, 25),
+    )
+    if response.status_code != 200:
+        return None
+    data = response.json()
+    return data if data.get("token") else None
+
+def exchange_7plus_id_token(session, id_token, headers):
+    auth_url = "https://7plus.com.au/auth/token"
+    response = session.post(
+        auth_url,
+        headers={**headers, "Content-Type": "application/json"},
+        data=json.dumps({"idToken": id_token, "platformId": "web", "regSource": "7plus"}),
+        timeout=(8, 25),
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("token"):
+        raise RuntimeError("No auth token returned by /auth/token.")
+    return data
+
+def parse_7plus_url(video_url):
+    match = re.search(
+        r'https?://(?:www\.)?7plus\.com\.au/(?P<path>[^?]+\?.*?\bepisode-id=(?P<id>[^&#]+))',
+        video_url,
+    )
+    if not match:
+        raise ValueError("Could not parse 7Plus show path and episode-id from URL")
+    path = match.group("path")
+    episode_id = match.group("id")
+    return path.split("?")[0], episode_id
+
 def get_authenticated_session(video_url, cookies_path):
     """
-    Loads cookies, performs Gigya -> id_token -> 7plus auth flow,
+    Reuses cached auth, refreshes it, or loads cookies for Gigya -> id_token -> 7plus auth flow,
     and returns (session, auth_token).
     """
+    config = ensure_7plus_cache(load_config())
+    cache = config["7plus"]["cache"]["auth"]
 
     # Reuse your retry-capable session factory + browser-y headers
     session = _session_with_retries()
+    cached_token = cache.get("token", "")
+    cached_expiry = cache.get("expiry", "")
+
+    if token_is_valid(cached_token, cached_expiry):
+        _PRINT(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Using cached 7Plus auth token{bcolors.ENDC}")
+        return session, cached_token
+
+    refreshed = refresh_7plus_auth_token(cache.get("refresh_token", ""))
+    if refreshed:
+        _PRINT(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Refreshed 7Plus auth token{bcolors.ENDC}")
+        return session, cache_7plus_auth(config, refreshed)
 
     # Load your exported cookies
     cookies = MozillaCookieJar(cookies_path)
@@ -151,17 +261,9 @@ def get_authenticated_session(video_url, cookies_path):
         raise RuntimeError("No id_token returned by Gigya.")
 
     # id_token -> 7plus auth token (Bearer)
-    auth_url = "https://7plus.com.au/auth/token"
-    r = session.post(
-        auth_url,
-        headers={**headers, "Content-Type": "application/json"},
-        data=json.dumps({"idToken": id_token, "platformId": "web", "regSource": "7plus"}),
-        timeout=(8, 25),
-    )
-    r.raise_for_status()
-    auth_token = r.json().get("token")
-    if not auth_token:
-        raise RuntimeError("No auth token returned by /auth/token.")
+    auth_data = exchange_7plus_id_token(session, id_token, headers)
+    auth_token = cache_7plus_auth(config, auth_data)
+    _PRINT(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} 7Plus auth token cache updated{bcolors.ENDC}")
 
     return session, auth_token
 
@@ -178,19 +280,16 @@ def get_pssh(mpd_url):
     return pssh_elements[0].text
 
 # Function to extract video details
-def extract_info(video_url, cookies_path, session=None, auth_token=None):
-    # Ensure we have an authenticated session/token
-    if session is None or auth_token is None:
-        session, auth_token = get_authenticated_session(video_url, cookies_path)
+def extract_info(video_url, cookies_path=None, session=None, auth_token=None):
+    # Try anonymous playback first. Keep the old cookie/Gigya flow as fallback.
+    if session is None:
+        session = _session_with_retries()
 
     headers = _default_headers("/", auth_token)
 
     # Playback endpoint + params 
     media_url = 'https://videoservice.swm.digital/playback'
-    path, episode_id = re.search(
-        r'https?://(?:www\.)?7plus\.com\.au/(?P<path>[^?]+\?.*?\bepisode-id=(?P<id>[^&#]+))',
-        video_url
-    ).groups()
+    _, episode_id = parse_7plus_url(video_url)
     media_params = {
         'appId': '7plus',
         'deviceType': 'web',
@@ -206,13 +305,22 @@ def extract_info(video_url, cookies_path, session=None, auth_token=None):
         r = session.get(media_url, params=media_params, headers=headers, timeout=(8, 25))
         r.raise_for_status()
     except Exception:
-        # Fallback: force Connection: close (helps when server drops keep-alive)
-        r = session.get(
-            media_url, params=media_params,
-            headers=_default_headers("/", auth_token, conn_close=True),
-            timeout=(8, 25)
-        )
-        r.raise_for_status()
+        try:
+            # Fallback: force Connection: close (helps when server drops keep-alive)
+            r = session.get(
+                media_url, params=media_params,
+                headers=_default_headers("/", auth_token, conn_close=True),
+                timeout=(8, 25)
+            )
+            r.raise_for_status()
+        except Exception:
+            if auth_token or not cookies_path:
+                raise
+            _PRINT(f"{bcolors.WARNING}{icons.ICON_WARNING} Anonymous 7Plus playback failed; falling back to cookies...{bcolors.ENDC}")
+            session, auth_token = get_authenticated_session(video_url, cookies_path)
+            headers = _default_headers("/", auth_token, conn_close=True)
+            r = session.get(media_url, params=media_params, headers=headers, timeout=(8, 25))
+            r.raise_for_status()
 
     media_resp = r.json()
 
@@ -234,6 +342,11 @@ def extract_info(video_url, cookies_path, session=None, auth_token=None):
             break
 
     if mpd_url and license_url:
+        max_height = get_max_height_from_mpd(mpd_url)
+        if max_height and max_height < 720 and not auth_token and cookies_path:
+            session, auth_token = get_authenticated_session(video_url, cookies_path)
+            return extract_info(video_url, cookies_path, session=session, auth_token=auth_token)
+
         pssh = get_pssh(mpd_url)
         if not pssh:
             print("Failed to extract PSSH from MPD")
@@ -243,6 +356,11 @@ def extract_info(video_url, cookies_path, session=None, auth_token=None):
             'license_url': license_url,
         }
     elif m3u8_url:
+        max_height = get_max_height_from_m3u8(m3u8_url)
+        if max_height and max_height < 720 and not auth_token and cookies_path:
+            session, auth_token = get_authenticated_session(video_url, cookies_path)
+            return extract_info(video_url, cookies_path, session=session, auth_token=auth_token)
+
         return {
             'formats': [{'url': m3u8_url, 'ext': 'm3u8'}]
         }
@@ -303,6 +421,20 @@ def get_resolution_from_mpd(mpd_url):
     height = best_representation.attrib.get('height')
     return f"{height}p" if height else None
 
+def get_max_height_from_mpd(mpd_url):
+    response = requests.get(mpd_url)
+    if response.status_code != 200:
+        return 0
+
+    mpd_xml = etree.fromstring(response.content)
+    representations = mpd_xml.xpath('//default:Representation', namespaces={'default': 'urn:mpeg:dash:schema:mpd:2011'})
+    heights = []
+    for rep in representations:
+        height = rep.attrib.get('height')
+        if str(height or "").isdigit():
+            heights.append(int(height))
+    return max(heights) if heights else 0
+
 # Function to get the maximum video resolution from the M3U8 manifest
 def get_resolution_from_m3u8(m3u8_url):
     response = requests.get(m3u8_url)
@@ -317,6 +449,17 @@ def get_resolution_from_m3u8(m3u8_url):
         return None
     best_resolution = max(resolutions, key=lambda r: int(r.split('x')[1]))
     return f"{best_resolution.split('x')[1]}p"
+
+def get_max_height_from_m3u8(m3u8_url):
+    response = requests.get(m3u8_url)
+    if response.status_code != 200:
+        return 0
+
+    heights = [
+        int(match.group(1))
+        for match in re.finditer(r"RESOLUTION=\d+x(\d+)", response.text)
+    ]
+    return max(heights) if heights else 0
 
 def get_mpd_streams(mpd_url):
     streams = []
@@ -452,6 +595,26 @@ def season_episode_from_episode_id(episode_id):
 
     return f"S{season}E{int(episode):02d}"
 
+def season_episode_from_metadata(alt_tag, episode_id):
+    match = re.search(r'Season (\d+) Episode (\d+)', alt_tag or "")
+    if match:
+        season, episode = match.groups()
+        return f"S{season.zfill(2)}E{episode.zfill(2)}"
+    return season_episode_from_episode_id(episode_id)
+
+def fetch_show_metadata(show_name, episode_id, session=None, auth_token=None):
+    session = session or _session_with_retries()
+    signed_up = "true" if auth_token else "false"
+    show_api_url = (
+        f"https://component-cdn.swm.digital/content/{show_name}"
+        f"?episode-id={episode_id}"
+        f"&platform-id=web&market-id=29&platform-version={PLATFORM_VERSION}&api-version=4.9&signedup={signed_up}"
+    )
+    headers = _default_headers(f"/{show_name}", auth_token)
+    response = session.get(show_api_url, headers=headers, timeout=(8, 25))
+    response.raise_for_status()
+    return response.json()
+
 # Function to format and display download command
 def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode="auto"):
     formats = info.get('formats')
@@ -494,7 +657,12 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
         
         user_input = input("Do you wish to download? Y or N: ").strip().lower()
         if user_input == 'y':
-            subprocess.run(download_command, shell=True)
+            _PRINT(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
+            result = subprocess.run(download_command, shell=True)
+            if result.returncode == 0:
+                _PRINT(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+        else:
+            _PRINT(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
     elif ext == 'm3u8':
         if url:
             resolution = get_resolution_from_m3u8(url)
@@ -517,164 +685,41 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             
             user_input = input("Do you wish to download? Y or N: ").strip().lower()
             if user_input == 'y':
-                subprocess.run(download_command, shell=True)
+                _PRINT(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
+                result = subprocess.run(download_command, shell=True)
+                if result.returncode == 0:
+                    _PRINT(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+            else:
+                _PRINT(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
         else:
             print(f"{bcolors.FAIL}Failed to retrieve necessary information for download{bcolors.ENDC}")       
 
 # Main logic
 def main(video_url, downloads_path, wvd_device_path, cookies_path, mode="auto"): 
-
-    # 1) Probe playback (unchanged) — add progress around it
-    print(f"{bcolors.OKBLUE}[STEP] Calling extract_info (videoservice)…{bcolors.ENDC}")
     info = extract_info(video_url, cookies_path)
     if not info:
-        print(f"{bcolors.FAIL}[ERR] extract_info returned no info — aborting{bcolors.ENDC}")
+        _PRINT(f"{bcolors.FAIL}Failed to extract 7Plus playback information{bcolors.ENDC}")
         return
-    print(f"{bcolors.OKGREEN}✅ extract_info succeeded{bcolors.ENDC}")
 
-    # 2) Parse show_name + episode_id from the URL (unchanged logic)
     try:
-        path, episode_id = re.search(
-            r'https?://(?:www\.)?7plus\.com\.au/(?P<path>[^?]+\?.*?\bepisode-id=(?P<id>[^&#]+))',
-            video_url
-        ).groups()
+        show_name, episode_id = parse_7plus_url(video_url)
     except Exception as e:
-        print(f"{bcolors.FAIL}[ERR] Could not parse show_name/episode_id: {e}{bcolors.ENDC}")
+        _PRINT(f"{bcolors.FAIL}Could not parse 7Plus URL: {e}{bcolors.ENDC}")
         return
-    show_name = path.split('?')[0]
-    print(f"{bcolors.OKBLUE}[PARSE] show_name={show_name}, episode_id={episode_id}{bcolors.ENDC}")
 
-    # 3) Build a session + load cookies (minimal, same libraries you already use)
-    print(f"{bcolors.OKBLUE}[STEP] Preparing session & loading cookies…{bcolors.ENDC}")
-    session = requests.Session()
-    cookies = MozillaCookieJar(cookies_path)
     try:
-        cookies.load(ignore_discard=True, ignore_expires=True)
-        print(f"{bcolors.OKGREEN}✅ Loaded cookies: {len(list(cookies))} items from {cookies_path}{bcolors.ENDC}")
-    except Exception as e:
-        print(f"{bcolors.FAIL}[ERR] Failed to load cookies: {e}{bcolors.ENDC}")
-        return
-    session.cookies = cookies
+        show_response = fetch_show_metadata(show_name, episode_id)
+    except Exception:
+        session, auth_token = get_authenticated_session(video_url, cookies_path)
+        show_response = fetch_show_metadata(show_name, episode_id, session=session, auth_token=auth_token)
 
-    # Browser-y headers 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/140.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-AU,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-        "Origin": "https://7plus.com.au",
-        "Referer": f"https://7plus.com.au/{show_name}",
-        "x-client-capabilities": "drm-auth",
-    }
-
-    # 4) Touch page (keeps cookie jar fresh)
     try:
-        print(f"{bcolors.OKBLUE}[HTTP] GET {video_url}{bcolors.ENDC}")
-        tr = session.get(video_url, headers=headers, timeout=(8, 25))
-        print(f"{bcolors.OKBLUE}[HTTP] -> {tr.status_code} ({len(tr.content)} bytes){bcolors.ENDC}")
+        show_title = show_response["title"].replace(" ", ".")
+        alt_tag = show_response["pageMetaData"]["objectGraphImage"]["altTag"]
     except Exception as e:
-        print(f"{bcolors.WARNING}[WARN] Touch failed: {e}{bcolors.ENDC}")
-
-    # 5) Find Gigya API key / login_token from cookies
-    api_key, login_token = None, None
-    for c in cookies:
-        if c.name.startswith('glt_'):
-            api_key = c.name[4:]
-            login_token = c.value
-            break
-    if not api_key or not login_token:
-        print(f"{bcolors.FAIL}[ERR] Failed to find Gigya API key/login_token (glt_*) in cookies{bcolors.ENDC}")
-        return
-    print(f"{bcolors.OKGREEN}✅ Found Gigya API key (masked): {api_key[:6]}…{bcolors.ENDC}")
-
-    # 6) Gigya -> id_token
-    login_url = 'https://login.7plus.com.au/accounts.getJWT'
-    login_params = {
-        'APIKey': api_key,
-        'sdk': 'js_latest',
-        'login_token': login_token,
-        'authMode': 'cookie',
-        'pageURL': 'https://7plus.com.au/',
-        'sdkBuild': '12471',
-        'format': 'json',
-    }
-    try:
-        print(f"{bcolors.OKBLUE}[HTTP] GET {login_url}{bcolors.ENDC}")
-        r = session.get(login_url, params=login_params, headers=headers, timeout=(8, 25))
-        print(f"{bcolors.OKBLUE}[HTTP] -> {r.status_code} ({len(r.content)} bytes){bcolors.ENDC}")
-        r.raise_for_status()
-        id_token = r.json().get('id_token')
-        if not id_token:
-            print(f"{bcolors.FAIL}[ERR] No id_token in Gigya response{bcolors.ENDC}")
-            return
-        print(f"{bcolors.OKGREEN}✅ Received id_token{bcolors.ENDC}")
-    except Exception as e:
-        print(f"{bcolors.FAIL}[ERR] Gigya JWT call failed: {e}{bcolors.ENDC}")
+        _PRINT(f"{bcolors.FAIL}Failed to parse 7Plus show metadata: {e}{bcolors.ENDC}")
         return
 
-    # 7) id_token -> 7plus auth token
-    auth_url = 'https://7plus.com.au/auth/token'
-    try:
-        print(f"{bcolors.OKBLUE}[HTTP] POST {auth_url}{bcolors.ENDC}")
-        r = session.post(
-            auth_url,
-            headers={**headers, 'Content-Type': 'application/json'},
-            data=json.dumps({'idToken': id_token, 'platformId': 'web', 'regSource': '7plus'}),
-            timeout=(8, 25)
-        )
-        print(f"{bcolors.OKBLUE}[HTTP] -> {r.status_code} ({len(r.content)} bytes){bcolors.ENDC}")
-        r.raise_for_status()
-        auth_token = r.json().get('token')
-        if not auth_token:
-            print(f"{bcolors.FAIL}[ERR] No auth token in /auth/token response{bcolors.ENDC}")
-            return
-        print(f"{bcolors.OKGREEN}✅ Received auth token (masked): {auth_token[:12]}…{bcolors.ENDC}")
-    except Exception as e:
-        print(f"{bcolors.FAIL}[ERR] Auth token exchange failed: {e}{bcolors.ENDC}")
-        return
-
-    # 8) Show API (episode input) WITH Authorization + latest platform-version
-    show_api_url = (
-        f"https://component-cdn.swm.digital/content/{show_name}"
-        f"?episode-id={episode_id}"
-        f"&platform-id=web&market-id=29&platform-version={PLATFORM_VERSION}&api-version=4.9&signedup=true"
-    )
-    show_headers = {**headers, "Authorization": f"Bearer {auth_token}"}
-    try:
-        print(f"{bcolors.OKBLUE}[HTTP] GET {show_api_url}{bcolors.ENDC}")
-        sr = session.get(show_api_url, headers=show_headers, timeout=(8, 25))
-        print(f"{bcolors.OKBLUE}[HTTP] -> {sr.status_code} ({len(sr.content)} bytes){bcolors.ENDC}")
-        sr.raise_for_status()
-        show_response = sr.json()
-    except Exception as e:
-        print(f"{bcolors.FAIL}[ERR] Show API call failed: {e}{bcolors.ENDC}")
-        return
-
-    # 9) Filename bits (unchanged)
-    try:
-        show_title = show_response['title'].replace(" ", ".")
-        alt_tag = show_response['pageMetaData']['objectGraphImage']['altTag']
-        print(f"{bcolors.OKGREEN}✅ Parsed show metadata — title={show_title}{bcolors.ENDC}")
-    except Exception as e:
-        print(f"{bcolors.FAIL}[ERR] Parsing show metadata failed: {e}{bcolors.ENDC}")
-        return
-
-    season_episode_tag = ""
-    m = re.search(r'Season (\d+) Episode (\d+)', alt_tag)
-    if m:
-        season, episode = m.groups()
-        season_episode_tag = f"S{season.zfill(2)}E{episode.zfill(2)}"
-        print(f"{bcolors.OKBLUE}[PARSE] season_episode_tag={season_episode_tag}{bcolors.ENDC}")
-    else:
-        season_episode_tag = season_episode_from_episode_id(episode_id)
-        if season_episode_tag:
-            print(f"{bcolors.OKBLUE}[PARSE] season_episode_tag={season_episode_tag} from episode-id{bcolors.ENDC}")
-        else:
-            print(f"{bcolors.WARNING}[WARN] Could not find season/episode metadata; continuing without tag{bcolors.ENDC}")
-
-    # 10) Kick off download command (unchanged)
-    print(f"{bcolors.OKBLUE}[STEP] Building download command…{bcolors.ENDC}")
+    season_episode_tag = season_episode_from_metadata(alt_tag, episode_id)
     get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode)
-    
+    return

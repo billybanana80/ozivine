@@ -13,6 +13,9 @@ import requests
 import urllib3
 import yaml
 
+from colors import bcolors
+import icons
+
 from services.proxy import append_downloader_proxy, mask_proxy_command
 from pywidevine.cdm import Cdm
 from pywidevine.device import Device
@@ -74,16 +77,6 @@ CATALOG_PARAMS = {
     "pf": "Regular",
     "allowpg": "true",
 }
-
-class bcolors:
-    OKGREEN = "\033[92m"
-    LIGHTBLUE = "\033[94m"
-    RED = "\033[91m"
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    FAIL = "\033[91m"
-    ENDC = "\033[0m"
-
 
 def first_name(value):
     if isinstance(value, list) and value:
@@ -224,7 +217,7 @@ class TVNZAPI:
         if missing:
             raise ValueError(f"Missing required local storage field(s): {', '.join(missing)}")
 
-        print(f"{bcolors.OKGREEN}✅ Loaded TVNZ local storage tokens{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Loaded TVNZ local storage tokens{bcolors.ENDC}")
 
     def refresh_user_tokens_if_needed(self):
         """
@@ -240,7 +233,7 @@ class TVNZAPI:
         if exp > int(time.time()) + 120:
             return
 
-        print(f"{bcolors.YELLOW}Access token expired or close to expiry. Refreshing...{bcolors.ENDC}")
+        print(f"{bcolors.YELLOW}{icons.ICON_INFO} Access token expired or close to expiry. Refreshing...{bcolors.ENDC}")
 
         headers = {
             "accept": "application/json, text/plain, */*",
@@ -279,9 +272,9 @@ class TVNZAPI:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(raw, f, indent=4)
 
-                print(f"{bcolors.OKGREEN}✅ Refreshed tokens written back to local storage JSON{bcolors.ENDC}")
+                print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Refreshed tokens written back to local storage JSON{bcolors.ENDC}")
         except Exception as e:
-            print(f"{bcolors.YELLOW}Token refreshed, but could not update local storage file: {e}{bcolors.ENDC}")
+            print(f"{bcolors.YELLOW}{icons.ICON_WARNING} Token refreshed, but could not update local storage file: {e}{bcolors.ENDC}")
 
     def get_contact_id(self):
         headers = {
@@ -306,7 +299,7 @@ class TVNZAPI:
             raise ConnectionError(f"Failed to get contact ID: {data}")
 
         self.contact_id = data["GetContactResponseMessage"]["contactMessage"][0]["contactID"]
-        print(f"{bcolors.OKGREEN}✅ Contact ID obtained{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Contact ID obtained{bcolors.ENDC}")
 
     def get_entitlements(self):
         headers = {
@@ -338,7 +331,7 @@ class TVNZAPI:
         if not self.xauthorization:
             raise ValueError(f"x-authorization token missing: {data}")
 
-        print(f"{bcolors.OKGREEN}✅ Entitlement token obtained{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Entitlement token obtained{bcolors.ENDC}")
 
     def get_oauth_token(self):
         headers = {
@@ -363,7 +356,7 @@ class TVNZAPI:
         if not self.oauth_token:
             raise ValueError(f"OAuth token missing: {data}")
 
-        print(f"{bcolors.OKGREEN}✅ OAuth token obtained{bcolors.ENDC}")
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} OAuth token obtained{bcolors.ENDC}")
 
     def register_app(self):
         headers = {
@@ -389,7 +382,7 @@ class TVNZAPI:
         if not self.secret:
             raise ValueError(f"App registration secret missing: {data}")
 
-        print(f"{bcolors.OKGREEN}✅ App registered{bcolors.ENDC}")
+        #print(f"{bcolors.OKGREEN}{ICON_SUCCESS} App registered{bcolors.ENDC}")
 
     def authenticate(self):
         self.load_local_storage()
@@ -761,7 +754,12 @@ def get_download_command(video_url, mode="auto"):
 
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == "y":
-        subprocess.run(download_command, shell=True)
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
+        result = subprocess.run(download_command, shell=True)
+        if result.returncode == 0:
+            print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+    else:
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
 
 def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="auto"):

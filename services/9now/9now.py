@@ -2,6 +2,8 @@ import requests
 import re
 import json
 import subprocess
+import os
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 from pywidevine.cdm import Cdm
 from pywidevine.device import Device
@@ -10,6 +12,8 @@ import base64
 import binascii
 import datetime
 import urllib3
+from colors import bcolors
+import icons
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -41,23 +45,6 @@ BRIGHTCOVE_HEADERS = {
 }
 BRIGHTCOVE_API = lambda video_id: f"https://edge.api.brightcove.com/playback/v1/accounts/{BRIGHTCOVE_ACCOUNT}/videos/{video_id}"
 
-# ANSI escape codes for colors
-class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    ORANGE = '\033[38;5;208m'
-
 def apply_9now_proxy_stability_options(command, thread_count=4, retry_count=10):
     if not current_proxy_url():
         return command
@@ -73,23 +60,16 @@ def apply_9now_proxy_stability_options(command, thread_count=4, retry_count=10):
 
 def retry_9now_proxy_download(command):
     if not current_proxy_url():
-        return
+        return None
 
     retry_command = apply_9now_proxy_stability_options(
         command,
         thread_count=1,
         retry_count=20,
     )
-    print(f"{bcolors.YELLOW}9Now proxy download failed; retrying with single-threaded segment downloads...{bcolors.ENDC}")
+    print(f"{bcolors.YELLOW}{icons.ICON_WARNING} 9Now proxy download failed; retrying with single-threaded segment downloads...{bcolors.ENDC}")
     print(mask_proxy_command(retry_command))
-    subprocess.run(retry_command, shell=True)
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    LIGHTBLUE = '\033[94m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    ORANGE = '\033[38;5;208m'
+    return subprocess.run(retry_command, shell=True)
 
 
 def _season_tag_from_slug(slug: str) -> str:
@@ -378,6 +358,174 @@ def print_streams(streams):
         language = stream.get("language") or "-"
         print(f"  {idx:>2}  {label:<4} {resolution:<10} {bitrate:<16} {codecs:<18} {language:<5}")
 
+def subtitle_extension(track, content):
+    mime_type = (track.get("mime_type") or "").lower()
+    path = urlparse(track.get("src") or "").path.lower()
+    text = content.lstrip("\ufeff").lstrip()
+
+    if text.startswith("WEBVTT") or "webvtt" in mime_type or path.endswith(".vtt"):
+        return "srt"
+    if "ttml" in mime_type or path.endswith((".ttml", ".dfxp")) or text.startswith("<tt"):
+        return "ttml"
+    if path.endswith(".srt") or re.search(r"(?m)^\d+\s*\n\d{2}:\d{2}:\d{2},\d{3}\s+-->", text):
+        return "srt"
+    return "srt"
+
+def subtitle_has_real_cues(content):
+    text = content.lstrip("\ufeff").strip()
+    if not text:
+        return False
+
+    if text.startswith("WEBVTT"):
+        return "-->" in text
+    if text.startswith("<") and "<tt" in text[:300].lower():
+        return bool(re.search(r"\bbegin\s*=", text, re.IGNORECASE))
+    return bool(re.search(r"(?m)^\d+\s*\n\d{2}:\d{2}:\d{2},\d{3}\s+-->", text))
+
+def get_valid_external_subtitles(brightcove_response):
+    subtitles = []
+    seen_urls = set()
+
+    for track in brightcove_response.get("text_tracks") or []:
+        src = track.get("src")
+        kind = (track.get("kind") or "").lower()
+        label = (track.get("label") or "").lower()
+        language = (track.get("srclang") or "").strip().lower()
+
+        if not src or src in seen_urls:
+            continue
+        if kind not in {"captions", "subtitles"}:
+            continue
+        if label in {"thumbnail", "thumbnails"}:
+            continue
+
+        try:
+            response = requests.get(src, headers=BRIGHTCOVE_HEADERS, timeout=20)
+            response.raise_for_status()
+            content = response.text
+        except Exception:
+            continue
+
+        if not subtitle_has_real_cues(content):
+            continue
+
+        seen_urls.add(src)
+        subtitles.append({
+            "url": src,
+            "language": language or "und",
+            "label": track.get("label") or language or "Subtitle",
+            "kind": kind,
+            "extension": subtitle_extension(track, content),
+            "content": content,
+        })
+
+    return subtitles
+
+def print_external_subtitles(subtitles):
+    if not subtitles:
+        return
+
+    print(f"\n{bcolors.YELLOW}External subtitles:{bcolors.ENDC}")
+    header = f"  {'#':>2}  {'Lang':<5} {'Kind':<10} {'Format':<6} {'Label':<20}"
+    divider = f"  {'-' * 2}  {'-' * 5} {'-' * 10} {'-' * 6} {'-' * 20}"
+    print(header)
+    print(divider)
+    for idx, subtitle in enumerate(subtitles, start=1):
+        print(
+            f"  {idx:>2}  "
+            f"{subtitle.get('language', '-'):<5} "
+            f"{subtitle.get('kind', '-'):<10} "
+            f"{subtitle.get('extension', '-'):<6} "
+            f"{subtitle.get('label', '-'):<20}"
+        )
+
+def vtt_timestamp_to_srt(timestamp):
+    return timestamp.replace(".", ",")
+
+def vtt_to_srt(vtt_text):
+    text = vtt_text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    cues = []
+    current = []
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                cues.append(current)
+                current = []
+            continue
+        if stripped == "WEBVTT" or stripped.startswith(("NOTE", "STYLE", "REGION", "X-TIMESTAMP-MAP")):
+            continue
+        current.append(stripped)
+
+    if current:
+        cues.append(current)
+
+    srt_blocks = []
+    for cue in cues:
+        timing_index = next((idx for idx, line in enumerate(cue) if "-->" in line), None)
+        if timing_index is None:
+            continue
+
+        timing = cue[timing_index]
+        match = re.match(
+            r"(?P<start>\d{2}:\d{2}:\d{2}\.\d{3})\s+-->\s+(?P<end>\d{2}:\d{2}:\d{2}\.\d{3})",
+            timing,
+        )
+        if not match:
+            continue
+
+        text_lines = cue[timing_index + 1:]
+        if not text_lines:
+            continue
+
+        srt_blocks.append(
+            f"{len(srt_blocks) + 1}\n"
+            f"{vtt_timestamp_to_srt(match.group('start'))} --> {vtt_timestamp_to_srt(match.group('end'))}\n"
+            f"{chr(10).join(text_lines)}"
+        )
+
+    if not srt_blocks:
+        return None
+
+    return "\n\n".join(srt_blocks) + "\n"
+
+def subtitle_content_for_save(subtitle):
+    content = subtitle.get("content") or ""
+    if subtitle.get("extension") == "srt":
+        converted = vtt_to_srt(content)
+        if converted:
+            return converted
+    return content
+
+def subtitle_filename(base_name, subtitle, index, used_names):
+    language = re.sub(r"[^A-Za-z0-9]+", "", subtitle.get("language") or "und") or "und"
+    extension = subtitle.get("extension") or "srt"
+    name = f"{base_name}.{language}.{extension}"
+    if name in used_names:
+        name = f"{base_name}.{language}.{index}.{extension}"
+    used_names.add(name)
+    return name
+
+def save_external_subtitles(subtitles, downloads_path, formatted_file_name):
+    if not subtitles:
+        return
+
+    os.makedirs(downloads_path, exist_ok=True)
+    used_names = set()
+    for idx, subtitle in enumerate(subtitles, start=1):
+        print(f"{bcolors.OKCYAN}{icons.ICON_WAITING} Processing subtitle:{bcolors.ENDC} {subtitle.get('language', 'und')} {subtitle.get('label', 'Subtitle')}")
+        content = subtitle_content_for_save(subtitle)
+        if not content:
+            print(f"{bcolors.WARNING}{icons.ICON_WARNING} Subtitle skipped: no usable cues found{bcolors.ENDC}")
+            continue
+
+        filename = subtitle_filename(formatted_file_name, subtitle, idx, used_names)
+        path = os.path.join(downloads_path, filename)
+        with open(path, "w", encoding="utf-8-sig", newline="") as file:
+            file.write(content)
+        print(f"{bcolors.GREEN}{icons.ICON_SUCCESS} Subtitle saved:{bcolors.ENDC} {path}")
+
 def format_base_name(series_name, season, episode, max_height, clip_title=None):
     base_name = series_name.title().replace('-', '.').replace(' ', '.').replace('_', '.').replace('/', '.').replace(':', '.')
     if clip_title:
@@ -396,7 +544,7 @@ def build_9now_command(source_url, downloads_path, formatted_file_name, keys=Non
     command = apply_9now_proxy_stability_options(command)
     return append_downloader_proxy(command)
 
-def print_9now_info(source_url, source_type, formatted_file_name, lic_url=None, pssh=None, keys=None):
+def print_9now_info(source_url, source_type, formatted_file_name, lic_url=None, pssh=None, keys=None, subtitles=None):
     if source_type == "mpd":
         print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{source_url}")
         if lic_url:
@@ -409,6 +557,7 @@ def print_9now_info(source_url, source_type, formatted_file_name, lic_url=None, 
     else:
         print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{source_url}")
         print_streams(get_m3u8_streams(source_url))
+    print_external_subtitles(subtitles or [])
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
 
 # Function to get keys using PSSH and license URL
@@ -467,8 +616,10 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
 
     session = requests.Session()  # Use a session to maintain cookies and headers
     response = session.get(BRIGHTCOVE_API(video_id), headers=BRIGHTCOVE_HEADERS).json()
+    subtitles = get_valid_external_subtitles(response)
     
     download_command = None
+    formatted_file_name = None
     
     if 'sources' in response:
         sources = response['sources']
@@ -482,7 +633,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
                 formatted_file_name = format_base_name(series_name, season, episode, max_height, clip_title)
                 if mode == "info":
                     keys = get_keys(pssh, lic_url, wvd_device_path)
-                    print_9now_info(mpd_url, "mpd", formatted_file_name, lic_url, pssh, keys)
+                    print_9now_info(mpd_url, "mpd", formatted_file_name, lic_url, pssh, keys, subtitles)
                     return
 
                 keys = get_keys(pssh, lic_url, wvd_device_path)
@@ -501,6 +652,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
                     interactive=(mode == "interactive"),
                 )
                 print(mask_proxy_command(download_command))
+                print_external_subtitles(subtitles)
         else:
             # Handling for unencrypted videos with m3u8
             unencrypted_source = next((src for src in sources if 'src' in src and 'master.m3u8' in src['src']), None)
@@ -509,7 +661,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
                 max_height = get_max_height_m3u8(m3u8_url)
                 formatted_file_name = format_base_name(series_name, season, episode, max_height, clip_title)
                 if mode == "info":
-                    print_9now_info(m3u8_url, "m3u8", formatted_file_name)
+                    print_9now_info(m3u8_url, "m3u8", formatted_file_name, subtitles=subtitles)
                     return
 
                 print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{m3u8_url}")
@@ -522,6 +674,7 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
                     interactive=(mode == "interactive"),
                 )
                 print(mask_proxy_command(download_command))
+                print_external_subtitles(subtitles)
             else:
                 print("No suitable source found for unencrypted video")
     else:
@@ -530,13 +683,20 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
     if download_command:
         user_input = input("Do you wish to download? Y or N: ").strip().lower()
         if user_input == 'y':
+            print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
             result = subprocess.run(download_command, shell=True)
+            download_ok = result.returncode == 0
             if result.returncode != 0:
-                retry_9now_proxy_download(download_command)
+                retry_result = retry_9now_proxy_download(download_command)
+                download_ok = bool(retry_result and retry_result.returncode == 0)
+            if download_ok:
+                save_external_subtitles(subtitles, downloads_path, formatted_file_name)
+                print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
+        else:
+            print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
 
 # Main execution flow
 def main(video_url, downloads_path, wvd_device_path, mode="auto"):
     get_download_command(video_url, downloads_path, wvd_device_path, mode)
-
 

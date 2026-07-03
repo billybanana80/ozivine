@@ -1,6 +1,9 @@
 import os
 import re
 
+from colors import bcolors
+from icons import ICON_PROXY
+
 
 REGION_BY_SERVICE = {
     "abciview": "AU",
@@ -23,8 +26,6 @@ DEFAULT_SERVICE_PROXY_ENABLED = {
     "tvnz": True,
 }
 PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "OZIVINE_PROXY_URL")
-ORANGE = "\033[38;5;208m"
-ENDC = "\033[0m"
 
 
 def mask_proxy(proxy_url):
@@ -96,7 +97,7 @@ def configure_proxy(config, service_key, printer=print):
 
     proxy = select_proxy(config, service_key)
     if not proxy:
-        printer(f"{ORANGE}Proxy:{ENDC} disabled or not configured; using direct connection")
+        printer(f"{bcolors.ORANGE}{ICON_PROXY} Proxy:{bcolors.ENDC} disabled or not configured; using direct connection")
         return None
 
     proxy_url = proxy["url"]
@@ -106,5 +107,5 @@ def configure_proxy(config, service_key, printer=print):
     os.environ["https_proxy"] = proxy_url
     os.environ["OZIVINE_PROXY_URL"] = proxy_url
 
-    printer(f"{ORANGE}Proxy:{ENDC} {proxy['provider']} {proxy['region']} {mask_proxy(proxy_url)}")
+    printer(f"{bcolors.ORANGE}{ICON_PROXY} Proxy:{bcolors.ENDC} {proxy['provider']} {proxy['region']} {mask_proxy(proxy_url)}")
     return proxy

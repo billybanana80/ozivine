@@ -1,0 +1,6 @@
+ICON_SUCCESS = "✅"
+ICON_INFO = "ℹ️"
+ICON_WAITING = "⏳"
+ICON_WARNING = "⚠️"
+ICON_FAILURE = "❌"
+ICON_PROXY = "🌐"
