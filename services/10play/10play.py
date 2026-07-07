@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 import yaml
 from colors import bcolors
 import icons
+from filename_utils import safe_windows_filename
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 #   Ozivine: 10Play Video Downloader
@@ -332,6 +333,7 @@ def vtt_to_srt(vtt_text):
     return "\n\n".join(srt_blocks) + "\n"
 
 def subtitle_filename(base_name, subtitle, index, used_names):
+    base_name = safe_windows_filename(base_name)
     language = re.sub(r"[^A-Za-z0-9]+", "", subtitle.get("language") or "und") or "und"
     extension = subtitle.get("extension") or "vtt"
     name = f"{base_name}.{language}.{extension}"

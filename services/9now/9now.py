@@ -14,6 +14,7 @@ import datetime
 import urllib3
 from colors import bcolors
 import icons
+from filename_utils import safe_windows_filename
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -499,6 +500,7 @@ def subtitle_content_for_save(subtitle):
     return content
 
 def subtitle_filename(base_name, subtitle, index, used_names):
+    base_name = safe_windows_filename(base_name)
     language = re.sub(r"[^A-Za-z0-9]+", "", subtitle.get("language") or "und") or "und"
     extension = subtitle.get("extension") or "srt"
     name = f"{base_name}.{language}.{extension}"
@@ -699,4 +701,3 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
 # Main execution flow
 def main(video_url, downloads_path, wvd_device_path, mode="auto"):
     get_download_command(video_url, downloads_path, wvd_device_path, mode)
-
