@@ -11,26 +11,19 @@ import base64
 import binascii
 import os
 import datetime as dt
+import time
 import yaml
+from urllib.parse import urlsplit
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
+from rich.console import Console
+from rich.rule import Rule
+from rich.text import Text
 from colors import bcolors
+from filename_utils import safe_windows_filename
 from services.proxy import append_downloader_proxy, mask_proxy_command
 import icons
 
-#   Ozivine: 7Plus Video Downloader
-#   Author: billybanana
-#   Usage: enter the series/season/episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
-#   eg: https://7plus.com.au/the-front-bar?episode-id=FBAR24-021
-#   Authentication: Cookies
-#   Geo-Locking: requires an Australian IP address
-#   Quality: up to 720p
-#   Key Features:
-#   1. Extract Video ID: Parses the 7Plus URL to extract the series name, season, and episode number, and then fetches the Brightcove video ID from the 9Now API.
-#   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
-#   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
-#   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
-#   5. Note: this script functions for both encrypted and non-encrypted video files.
 
 _PRINT = print
 
@@ -38,6 +31,9 @@ _PRINT = print
 BASE_URL = "https://7plus.com.au"
 PLATFORM_VERSION = "1.0.106518"
 CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml"))
+TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "temp"))
+EXPORT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "export"))
+console = Console()
 
 def _default_headers(referer_path="/", auth_token=None, conn_close=False):
     h = {
@@ -194,10 +190,576 @@ def parse_7plus_url(video_url):
         video_url,
     )
     if not match:
+        resolved_url = resolve_short_7plus_video_url(video_url)
+        if resolved_url and resolved_url != video_url:
+            return parse_7plus_url(resolved_url)
         raise ValueError("Could not parse 7Plus show path and episode-id from URL")
     path = match.group("path")
     episode_id = match.group("id")
     return path.split("?")[0], episode_id
+
+def parse_show_slug(series_url):
+    parts = urlsplit(series_url.strip())
+    path_parts = [part for part in parts.path.split("/") if part]
+    return path_parts[0] if path_parts else ""
+
+def find_episode_id_in_component(value):
+    if isinstance(value, dict):
+        for key in ("playerId", "catalogueNumber"):
+            if value.get(key):
+                return str(value[key])
+
+        player_data = value.get("playerData")
+        if isinstance(player_data, dict) and player_data.get("episodePlayerId"):
+            return str(player_data["episodePlayerId"])
+
+        for key in ("videoUrl", "url"):
+            match = re.search(r"referenceId=ref:([^&]+)", str(value.get(key) or ""))
+            if match:
+                return match.group(1)
+
+        for child in value.values():
+            found = find_episode_id_in_component(child)
+            if found:
+                return found
+
+    if isinstance(value, list):
+        for child in value:
+            found = find_episode_id_in_component(child)
+            if found:
+                return found
+
+    return ""
+
+def collect_episode_ids_in_component(value, episode_ids=None):
+    episode_ids = episode_ids if episode_ids is not None else set()
+
+    if isinstance(value, dict):
+        for key in ("playerId", "catalogueNumber"):
+            if value.get(key):
+                episode_ids.add(str(value[key]))
+
+        player_data = value.get("playerData")
+        if isinstance(player_data, dict) and player_data.get("episodePlayerId"):
+            episode_ids.add(str(player_data["episodePlayerId"]))
+
+        for key in ("videoUrl", "url"):
+            match = re.search(r"referenceId=ref:([^&]+)", str(value.get(key) or ""))
+            if match:
+                episode_ids.add(match.group(1))
+
+        for child in value.values():
+            collect_episode_ids_in_component(child, episode_ids)
+
+    if isinstance(value, list):
+        for child in value:
+            collect_episode_ids_in_component(child, episode_ids)
+
+    return episode_ids
+
+def is_single_asset_7plus_page(series_data):
+    featured = find_featured_metadata(series_data)
+    subtitle = str(featured.get("subtitle") or "")
+    if re.search(r"\bS\d+\s+E\d+\b|Season\s+\d+\s+Episode\s+\d+", subtitle, re.IGNORECASE):
+        return False
+
+    return len(collect_episode_ids_in_component(series_data)) == 1
+
+def resolve_short_7plus_video_url(video_url, session=None, auth_token=None):
+    if "episode-id=" in video_url:
+        return video_url
+
+    show_slug = parse_show_slug(video_url)
+    if not show_slug:
+        return video_url
+
+    try:
+        series_data = get_series_data(show_slug, session=session, auth_token=auth_token)
+    except Exception:
+        return video_url
+
+    if not is_single_asset_7plus_page(series_data):
+        return video_url
+
+    episode_id = find_episode_id_in_component(series_data)
+    if not episode_id:
+        return video_url
+
+    return f"{BASE_URL}/{show_slug}?episode-id={episode_id}"
+
+def get_json(session, url, referer_path, auth_token=None):
+    response = session.get(
+        url,
+        headers=_default_headers(referer_path, auth_token),
+        timeout=(8, 25),
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    return response.json()
+
+def get_series_data(show_slug, session=None, auth_token=None):
+    session = session or _session_with_retries()
+    signed_up = "true" if auth_token else "false"
+    url = (
+        f"https://component-cdn.swm.digital/content/{show_slug}"
+        f"?platform-id=web&market-id=29&platform-version={PLATFORM_VERSION}"
+        f"&api-version=4.9&signedup={signed_up}"
+    )
+    return get_json(session, url, f"/{show_slug}", auth_token)
+
+def get_season_data(source_url, show_slug, session=None, auth_token=None):
+    session = session or _session_with_retries()
+    return get_json(session, source_url, f"/{show_slug}", auth_token)
+
+def extract_season_sources(series_data):
+    season_sources = []
+
+    for item in series_data.get("items", []) or []:
+        for tab in item.get("items", []) or []:
+            if tab.get("title") != "Episodes":
+                continue
+
+            for container in tab.get("items", []) or []:
+                for season in container.get("items", []) or []:
+                    source_url = ((season.get("items") or [{}])[0].get("source") or {}).get("url")
+                    if not source_url:
+                        continue
+
+                    title = str(season.get("title") or season.get("id") or "Episodes").strip()
+                    season_sources.append({
+                        "label": normalize_season_label(title, container.get("title")),
+                        "sort_key": season_sort_key(title),
+                        "source_url": source_url,
+                    })
+
+    return season_sources
+
+def normalize_season_label(title, container_title=None):
+    title = str(title or "").strip()
+    if not title:
+        return "Episodes"
+
+    if re.fullmatch(r"\d{4}", title):
+        return title
+
+    if re.fullmatch(r"\d+", title):
+        label = "Season" if str(container_title or "").lower() != "year" else "Year"
+        return f"{label} {int(title)}"
+
+    return title
+
+def season_sort_key(title):
+    text = str(title or "")
+    numbers = [int(value) for value in re.findall(r"\d+", text)]
+    primary = numbers[0] if numbers else 0
+    after_show = 1 if "after show" in text.lower() else 0
+    return (primary, after_show, text.lower())
+
+def extract_episode_numbers(episode, fallback_label):
+    candidates = [
+        episode.get("playerData", {}).get("image", {}).get("altTag"),
+        episode.get("cardData", {}).get("image", {}).get("altTag"),
+        episode.get("infoPanelData", {}).get("subtitle"),
+        episode.get("playerData", {}).get("title"),
+        episode.get("cardData", {}).get("title"),
+        episode.get("catalogueNumber"),
+    ]
+
+    season = None
+    episode_number = None
+    for value in candidates:
+        text = str(value or "")
+        match = re.search(r"Season\s+(\d+)\s+Episode\s+(\d+)", text, re.IGNORECASE)
+        if match:
+            season = int(match.group(1))
+            episode_number = int(match.group(2))
+            break
+
+        match = re.search(r"S(\d+)\s*E(\d+)", text, re.IGNORECASE)
+        if match:
+            season = int(match.group(1))
+            episode_number = int(match.group(2))
+            break
+
+        match = re.search(r"-S(\d+)T(\d+)", text, re.IGNORECASE)
+        if match:
+            season = int(match.group(1))
+            episode_number = int(match.group(2))
+            break
+
+    if season is None:
+        label_match = re.search(r"\d+", str(fallback_label or ""))
+        season = int(label_match.group(0)) if label_match else 0
+
+    if episode_number is None:
+        video_id = str(episode.get("catalogueNumber") or episode.get("playerData", {}).get("episodePlayerId") or "")
+        match = re.search(r"-(\d+)$", video_id)
+        if match:
+            episode_number = int(match.group(1))
+
+    return season, episode_number or 0
+
+def clean_episode_title(episode):
+    title = (
+        episode.get("cardData", {}).get("title")
+        or episode.get("playerData", {}).get("title")
+        or episode.get("infoPanelData", {}).get("subtitle")
+        or "Unknown Title"
+    )
+    title = re.sub(r"^S\d+\s+E\d+\s*[-:]\s*", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"^\d+\.\s*", "", title)
+    title = re.sub(r"^Episode\s+\d+\s*[-:]\s*", "", title, flags=re.IGNORECASE)
+    return title.strip() or "Unknown Title"
+
+def collect_episode_details(show_slug, series_data, session=None, auth_token=None):
+    session = session or _session_with_retries()
+    show_title = series_data.get("title") or show_slug.replace("-", " ").title()
+    episode_details = []
+    episode_summary = []
+    seen_ids = set()
+
+    for season_source in extract_season_sources(series_data):
+        season_data = get_season_data(season_source["source_url"], show_slug, session, auth_token)
+        label = season_source["label"]
+        for episode in season_data.get("mediaItems", []) or []:
+            video_id = episode.get("catalogueNumber") or episode.get("playerData", {}).get("episodePlayerId")
+            if not video_id or video_id in seen_ids:
+                continue
+
+            content_link = episode.get("cardData", {}).get("contentLink", {}).get("url") or f"/{show_slug}?episode-id={video_id}"
+            video_url = f"{BASE_URL}{content_link}".replace("&autoplay=true", "").replace("?autoplay=true", "")
+            season_number, episode_number = extract_episode_numbers(episode, label)
+            title = clean_episode_title(episode)
+            thumbnail = episode.get("cardData", {}).get("image", {}).get("url") or episode.get("playerData", {}).get("image", {}).get("url")
+            if thumbnail and thumbnail.startswith("https://imagemap.swm.digital/image/"):
+                thumbnail = f"https://images.swm.digital/image?u={thumbnail}&q=95&w=320"
+
+            episode_details.append({
+                "Video URL": video_url,
+                "Video ID": video_id,
+                "Show Title": show_title,
+                "Title": title,
+                "Season": season_number,
+                "Season Label": label,
+                "Season Sort": season_source["sort_key"],
+                "Episode": episode_number,
+                "Date Aired": episode.get("infoPanelData", {}).get("airDate", "Not Available"),
+                "Description": episode.get("infoPanelData", {}).get("shortSynopsis") or "Not Available",
+                "Thumbnail": thumbnail or "Not Available",
+            })
+            episode_summary.append(f"{show_title} {label} Episode {episode_number} - {title} ID: {video_id}")
+            seen_ids.add(video_id)
+
+    episode_details.sort(key=lambda item: (item.get("Season Sort") or (0, 0, ""), item.get("Episode") or 0))
+    episode_summary.sort()
+
+    return {
+        "Episode Summary": episode_summary,
+        "Episode Details": episode_details,
+    }
+
+def save_episode_list_json(show_slug, episode_data):
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    output_path = os.path.join(TEMP_DIR, f"7plus_{safe_windows_filename(show_slug)}_episodes.json")
+
+    with open(output_path, "w", encoding="utf-8") as file:
+        json.dump(episode_data, file, ensure_ascii=False, indent=4)
+
+    return output_path
+
+def export_episode_list_text(show_slug, episodes):
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_path = os.path.join(EXPORT_DIR, f"7plus_{safe_windows_filename(show_slug)}_export_{timestamp}.txt")
+
+    with open(output_path, "w", encoding="utf-8") as file:
+        for episode in episodes:
+            label = episode.get("Season Label") or "Episodes"
+            episode_number = episode.get("Episode Label") or episode.get("Episode") or "-"
+            title = episode.get("Title") or "-"
+            url = episode.get("Video URL") or "-"
+            file.write(f"{label} Episode {episode_number} - {title}\n")
+            file.write(f"{url}\n")
+
+    return output_path
+
+def print_episode_list(series_title, episodes):
+    if not episodes:
+        print(f"{bcolors.WARNING}No playable 7Plus episodes found.{bcolors.ENDC}")
+        return
+
+    tree_style = "grey70"
+    label_style = "bold grey70"
+    header_style = "bright_blue"
+
+    groups = {}
+    group_sort = {}
+    for episode in episodes:
+        label = episode.get("Season Label") or f"Season {episode.get('Season') or 0}"
+        groups.setdefault(label, []).append(episode)
+        group_sort[label] = episode.get("Season Sort") or (episode.get("Season") or 0, 0, label.lower())
+
+    group_labels = sorted(groups, key=lambda label: group_sort[label])
+    for group_episodes in groups.values():
+        group_episodes.sort(key=lambda item: item.get("Episode") or 0)
+
+    season_summary = ",  ".join(
+        f"{label}({len(groups[label])})"
+        for label in group_labels
+    )
+
+    console.print(Rule(Text.assemble(("7Plus Series: ", f"bold {header_style}"), (series_title, "bold white")), style=header_style))
+    console.print()
+    console.print(
+        Text.assemble(
+            (f"{len(group_labels)} Seasons", label_style),
+            (f",  {season_summary}" if season_summary else "", "white"),
+        )
+    )
+
+    for group_index, label in enumerate(group_labels):
+        if group_index > 0:
+            console.print(Text("│", style=tree_style))
+
+        group_is_last = group_index == len(group_labels) - 1
+        group_branch = "└─" if group_is_last else "├─"
+        group_child_prefix = "   " if group_is_last else "│  "
+        group_episodes = groups[label]
+        console.print(
+            Text.assemble(
+                (f"{group_branch} ", tree_style),
+                (f"{label}: ", label_style),
+                (f"{len(group_episodes)} episodes", "white"),
+            )
+        )
+
+        for index, episode in enumerate(group_episodes):
+            is_last = index == len(group_episodes) - 1
+            branch = "└─" if is_last else "├─"
+            url_branch = "  " if is_last else "│ "
+            episode_number = episode.get("Episode") or "-"
+
+            console.print(
+                Text.assemble(
+                    (group_child_prefix, tree_style),
+                    (f"{branch} ", tree_style),
+                    (f"{episode_number}. ", label_style),
+                    (episode.get("Title") or "-", "white"),
+                )
+            )
+            console.print(
+                Text.assemble(
+                    (group_child_prefix, tree_style),
+                    (f"{url_branch} ", tree_style),
+                    (episode.get("Video URL") or "-", "bright_blue"),
+                )
+            )
+
+def list_show_episodes(series_url, cookies_path=None, export_list=False):
+    show_slug = parse_show_slug(series_url)
+    if not show_slug:
+        raise ValueError("Could not determine 7Plus show slug from the URL.")
+
+    print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
+    session = _session_with_retries()
+    auth_token = None
+    try:
+        series_data = get_series_data(show_slug, session=session)
+        episode_data = collect_episode_details(show_slug, series_data, session=session)
+    except Exception:
+        if not cookies_path:
+            raise
+        session, auth_token = get_authenticated_session(series_url, cookies_path)
+        series_data = get_series_data(show_slug, session=session, auth_token=auth_token)
+        episode_data = collect_episode_details(show_slug, series_data, session=session, auth_token=auth_token)
+
+    episodes = episode_data["Episode Details"]
+    series_title = series_data.get("title") or show_slug.replace("-", " ").title()
+    output_path = save_episode_list_json(show_slug, episode_data)
+
+    try:
+        console.print()
+        print_episode_list(series_title, episodes)
+        print(f"\n{bcolors.OKGREEN}{icons.ICON_SUCCESS} Found {len(episodes)} episode(s){bcolors.ENDC}")
+        if export_list:
+            export_path = export_episode_list_text(show_slug, episodes)
+            print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Exported list: {export_path}{bcolors.ENDC}")
+    finally:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+def parse_selector_part(selector_part):
+    match = re.fullmatch(r"s(?P<season>\d{2}|\d{4})(?:e(?P<episode>\d{2}))?", selector_part)
+    if not match:
+        raise ValueError(
+            "Download selector must be sXXeXX, sXXXXeXX, sXX, sXXXX, or a matching range. "
+            "Examples: s01e01, s2026e01, s01, s2026, s01e03-s02e02, s01-s03"
+        )
+
+    return {
+        "season": int(match.group("season")),
+        "episode": int(match.group("episode")) if match.group("episode") else None,
+    }
+
+def parse_download_selector(selector):
+    selector = str(selector or "").strip().lower()
+    if "-" not in selector:
+        part = parse_selector_part(selector)
+        return {
+            "type": "single_episode" if part["episode"] is not None else "single_season",
+            "start": part,
+            "end": part,
+        }
+
+    range_parts = selector.split("-", 1)
+    if not range_parts[0] or not range_parts[1]:
+        raise ValueError(
+            "Download range must include both start and end selectors. "
+            "Examples: s01e03-s02e02 or s01-s03"
+        )
+
+    start = parse_selector_part(range_parts[0])
+    end = parse_selector_part(range_parts[1])
+    start_has_episode = start["episode"] is not None
+    end_has_episode = end["episode"] is not None
+
+    if start_has_episode != end_has_episode:
+        raise ValueError("Download range must use two episode selectors or two season selectors.")
+
+    if start_has_episode:
+        if (start["season"], start["episode"]) > (end["season"], end["episode"]):
+            raise ValueError("Download episode range start must be before the end selector.")
+        return {"type": "episode_range", "start": start, "end": end}
+
+    if start["season"] > end["season"]:
+        raise ValueError("Download season range start must be before the end selector.")
+    return {"type": "season_range", "start": start, "end": end}
+
+def format_selector_part(part):
+    season = part["season"]
+    season_label = f"s{season:04d}" if season >= 1000 else f"s{season:02d}"
+    if part["episode"] is not None:
+        return f"{season_label}e{part['episode']:02d}"
+    return season_label
+
+def format_download_selector(parsed_selector):
+    if parsed_selector["start"] == parsed_selector["end"]:
+        return format_selector_part(parsed_selector["start"])
+    return f"{format_selector_part(parsed_selector['start'])}-{format_selector_part(parsed_selector['end'])}"
+
+def format_queue_selector(season, episode=None):
+    season_label = f"S{season:04d}" if season >= 1000 else f"S{season:02d}"
+    if episode is not None:
+        return f"{season_label}E{episode:02d}"
+    return season_label
+
+def warn_if_partial_range_match(parsed_selector, selected):
+    if parsed_selector["type"] == "episode_range":
+        requested_start = (parsed_selector["start"]["season"], parsed_selector["start"]["episode"])
+        requested_end = (parsed_selector["end"]["season"], parsed_selector["end"]["episode"])
+        matched_start = (int(selected[0].get("Season") or 0), int(selected[0].get("Episode") or 0))
+        matched_end = (int(selected[-1].get("Season") or 0), int(selected[-1].get("Episode") or 0))
+        if matched_start > requested_start or matched_end < requested_end:
+            matched_label = f"{format_queue_selector(*matched_start)}-{format_queue_selector(*matched_end)}"
+            print(f"{bcolors.WARNING}{icons.ICON_WARNING} Requested range {format_download_selector(parsed_selector)} only matched {matched_label}.{bcolors.ENDC}")
+
+    if parsed_selector["type"] == "season_range":
+        requested_start = parsed_selector["start"]["season"]
+        requested_end = parsed_selector["end"]["season"]
+        matched_seasons = sorted({int(item.get("Season") or 0) for item in selected})
+        if matched_seasons[0] > requested_start or matched_seasons[-1] < requested_end:
+            matched_label = f"{format_queue_selector(matched_seasons[0])}-{format_queue_selector(matched_seasons[-1])}"
+            print(f"{bcolors.WARNING}{icons.ICON_WARNING} Requested range {format_download_selector(parsed_selector)} only matched seasons {matched_label}.{bcolors.ENDC}")
+
+def get_series_episodes(series_url, cookies_path=None):
+    show_slug = parse_show_slug(series_url)
+    if not show_slug:
+        raise ValueError("Could not determine 7Plus show slug from the URL.")
+
+    session = _session_with_retries()
+    try:
+        series_data = get_series_data(show_slug, session=session)
+        episode_data = collect_episode_details(show_slug, series_data, session=session)
+    except Exception:
+        if not cookies_path:
+            raise
+        session, auth_token = get_authenticated_session(series_url, cookies_path)
+        series_data = get_series_data(show_slug, session=session, auth_token=auth_token)
+        episode_data = collect_episode_details(show_slug, series_data, session=session, auth_token=auth_token)
+
+    return show_slug, episode_data["Episode Details"]
+
+def is_extra_season_label(episode):
+    label = str(episode.get("Season Label") or "").lower()
+    return "after show" in label
+
+def select_episodes(series_url, selector, cookies_path=None):
+    parsed_selector = parse_download_selector(selector)
+    show_slug, episodes = get_series_episodes(series_url, cookies_path)
+    selected = []
+    for item in episodes:
+        if is_extra_season_label(item):
+            continue
+
+        season = int(item.get("Season") or 0)
+        episode = int(item.get("Episode") or 0)
+
+        if parsed_selector["type"] == "single_episode":
+            keep = season == parsed_selector["start"]["season"] and episode == parsed_selector["start"]["episode"]
+        elif parsed_selector["type"] == "single_season":
+            keep = season == parsed_selector["start"]["season"]
+        elif parsed_selector["type"] == "episode_range":
+            keep = (
+                (parsed_selector["start"]["season"], parsed_selector["start"]["episode"])
+                <= (season, episode)
+                <= (parsed_selector["end"]["season"], parsed_selector["end"]["episode"])
+            )
+        else:
+            keep = parsed_selector["start"]["season"] <= season <= parsed_selector["end"]["season"]
+
+        if keep:
+            selected.append(item)
+
+    if not selected:
+        normalized = format_download_selector(parsed_selector)
+        series_title = episodes[0].get("Show Title") if episodes else show_slug.replace("-", " ").title()
+        raise LookupError(f"No 7Plus episodes found for selector {normalized} in {series_title}.")
+
+    selected.sort(key=lambda item: (int(item.get("Season") or 0), int(item.get("Episode") or 0)))
+    warn_if_partial_range_match(parsed_selector, selected)
+    return selected
+
+def print_download_queue(episodes):
+    console.print()
+    console.print(Text("Download queue:", style="bold bright_blue"))
+    for episode in episodes:
+        season = int(episode.get("Season") or 0)
+        episode_number = int(episode.get("Episode") or 0)
+        season_label = f"S{season:04d}" if season >= 1000 else f"S{season:02d}"
+        console.print(
+            Text.assemble(
+                (f"{season_label}E{episode_number:02d} ", "bold grey70"),
+                (episode.get("Title") or "-", "white"),
+            )
+        )
+
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, cookies_path):
+    print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
+    try:
+        episodes = select_episodes(series_url, selector, cookies_path)
+    except LookupError as error:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} {error}{bcolors.ENDC}")
+        return
+    print_download_queue(episodes)
+
+    user_input = input(f"\nDownload {len(episodes)} episode(s)? Y or N: ").strip().lower()
+    if user_input != "y":
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
+        return
+
+    for index, episode in enumerate(episodes, start=1):
+        print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {episode.get('Title') or episode.get('Video URL')}{bcolors.ENDC}")
+        main(episode["Video URL"], downloads_path, wvd_device_path, cookies_path, mode="auto", export_list=False, download_selector=None, auto_download=True)
 
 def get_authenticated_session(video_url, cookies_path):
     """
@@ -565,7 +1127,51 @@ def build_7plus_command(url, downloads_path, formatted_file_name, keys=None, int
         download_command += " --key " + " --key ".join(keys)
     return download_command
 
-def print_7plus_info(source_url, source_type, formatted_file_name, lic_url=None, pssh=None, keys=None):
+def find_featured_metadata(show_response):
+    for item in show_response.get("items", []) or []:
+        if item.get("type") == "featuredShowHeader":
+            return item
+    return {}
+
+def clean_info_episode_title(value):
+    title = str(value or "").strip()
+    title = re.sub(r"^S\d+\s+E\d+\s*[-:]\s*", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"^Season\s+\d+\s+Episode\s+\d+\s*[-:]\s*", "", title, flags=re.IGNORECASE)
+    return title.strip() or None
+
+def format_info_date(value, production_year=None):
+    text = str(value or "").strip()
+    match = re.fullmatch(r"Added\s+(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})", text, re.IGNORECASE)
+    if match and production_year:
+        day, month = match.groups()
+        try:
+            parsed = dt.datetime.strptime(f"{int(day)} {month[:3]} {production_year}", "%d %b %Y")
+            return parsed.strftime("%d %B %Y").lstrip("0")
+        except ValueError:
+            pass
+    return text
+
+def print_info_metadata(show_response):
+    if not show_response:
+        return
+
+    featured = find_featured_metadata(show_response)
+    page_metadata = show_response.get("pageMetaData") or {}
+    fields = [
+        ("Show", show_response.get("title") or featured.get("title")),
+        ("Title", clean_info_episode_title(featured.get("subtitle") or page_metadata.get("pageTitle"))),
+        ("Date Aired", format_info_date(featured.get("airDate"), featured.get("productionYear"))),
+        ("Description", featured.get("shortSynopsis") or page_metadata.get("description")),
+    ]
+    visible_fields = [(label, str(value).strip()) for label, value in fields if value and str(value).strip() and str(value).strip() != "Not Available"]
+    if not visible_fields:
+        return
+
+    _PRINT(f"\n{bcolors.YELLOW}Episode metadata:{bcolors.ENDC}")
+    for label, value in visible_fields:
+        _PRINT(f"{bcolors.LIGHTBLUE}{label}: {bcolors.ENDC}{value}")
+
+def print_7plus_info(source_url, source_type, formatted_file_name, lic_url=None, pssh=None, keys=None, metadata=None):
     if source_type == "mpd":
         _PRINT(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{source_url}")
         if lic_url:
@@ -578,6 +1184,7 @@ def print_7plus_info(source_url, source_type, formatted_file_name, lic_url=None,
     else:
         _PRINT(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{source_url}")
         print_streams(get_m3u8_streams(source_url))
+    print_info_metadata(metadata or {})
     _PRINT(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
 
 def season_episode_from_episode_id(episode_id):
@@ -602,6 +1209,20 @@ def season_episode_from_metadata(alt_tag, episode_id):
         return f"S{season.zfill(2)}E{episode.zfill(2)}"
     return season_episode_from_episode_id(episode_id)
 
+def is_movie_metadata(show_response, episode_id):
+    featured = find_featured_metadata(show_response)
+    if not featured:
+        return False
+
+    if featured.get("playerId") and featured.get("playerId") != episode_id:
+        return False
+
+    alt_tag = ((show_response.get("pageMetaData") or {}).get("objectGraphImage") or {}).get("altTag") or ""
+    if re.search(r"Season\s+\d+\s+Episode\s+\d+", alt_tag, re.IGNORECASE):
+        return False
+
+    return bool(featured.get("playerId") or featured.get("duration") or featured.get("productionYear"))
+
 def fetch_show_metadata(show_name, episode_id, session=None, auth_token=None):
     session = session or _session_with_retries()
     signed_up = "true" if auth_token else "false"
@@ -616,7 +1237,7 @@ def fetch_show_metadata(show_name, episode_id, session=None, auth_token=None):
     return response.json()
 
 # Function to format and display download command
-def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode="auto"):
+def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode="auto", auto_download=False, metadata=None):
     formats = info.get('formats')
     if not formats:
         print(f"{bcolors.FAIL}No formats found in info{bcolors.ENDC}")
@@ -641,7 +1262,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
                 formatted_file_name += f".{season_episode_tag}"
             formatted_file_name += f".{resolution}.7PLUS.WEB-DL.AAC2.0.H.264"
             if mode == "info":
-                print_7plus_info(url, "mpd", formatted_file_name, lic_url, pssh, keys)
+                print_7plus_info(url, "mpd", formatted_file_name, lic_url, pssh, keys, metadata)
                 return
             download_command = build_7plus_command(url, downloads_path, formatted_file_name, keys, interactive=(mode == "interactive"))
         
@@ -655,7 +1276,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
         _PRINT(mask_proxy_command(download_command))
         # ---------------------------------------------------------------------
         
-        user_input = input("Do you wish to download? Y or N: ").strip().lower()
+        user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
         if user_input == 'y':
             _PRINT(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
             result = subprocess.run(download_command, shell=True)
@@ -673,7 +1294,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
                 formatted_file_name += f".{season_episode_tag}"
             formatted_file_name += f".{resolution}.7PLUS.WEB-DL.AAC2.0.H.264"
             if mode == "info":
-                print_7plus_info(url, "m3u8", formatted_file_name)
+                print_7plus_info(url, "m3u8", formatted_file_name, metadata=metadata)
                 return
             download_command = build_7plus_command(url, downloads_path, formatted_file_name, interactive=(mode == "interactive"))
             
@@ -683,7 +1304,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             _PRINT(mask_proxy_command(download_command))
             # ------------------------------------------------------------------
             
-            user_input = input("Do you wish to download? Y or N: ").strip().lower()
+            user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
             if user_input == 'y':
                 _PRINT(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
                 result = subprocess.run(download_command, shell=True)
@@ -695,16 +1316,30 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             print(f"{bcolors.FAIL}Failed to retrieve necessary information for download{bcolors.ENDC}")       
 
 # Main logic
-def main(video_url, downloads_path, wvd_device_path, cookies_path, mode="auto"): 
-    info = extract_info(video_url, cookies_path)
-    if not info:
-        _PRINT(f"{bcolors.FAIL}Failed to extract 7Plus playback information{bcolors.ENDC}")
+def main(video_url, downloads_path, wvd_device_path, cookies_path, mode="auto", export_list=False, download_selector=None, auto_download=False): 
+    if mode == "list":
+        list_show_episodes(video_url, cookies_path, export_list)
+        return
+
+    if mode == "download":
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, cookies_path)
         return
 
     try:
         show_name, episode_id = parse_7plus_url(video_url)
     except Exception as e:
+        if "episode-id=" not in video_url and parse_show_slug(video_url):
+            _PRINT(f"{bcolors.WARNING}{icons.ICON_WARNING} 7Plus series URLs need a flag.{bcolors.ENDC}")
+            _PRINT(f"{bcolors.YELLOW}{icons.ICON_INFO} Use -l to list episodes or -d with a selector to download from a series.{bcolors.ENDC}")
+            _PRINT(f"{bcolors.YELLOW}{icons.ICON_INFO} For a single episode, use the expanded 7Plus URL with ?episode-id=...{bcolors.ENDC}")
+            return
         _PRINT(f"{bcolors.FAIL}Could not parse 7Plus URL: {e}{bcolors.ENDC}")
+        return
+
+    resolved_video_url = f"{BASE_URL}/{show_name}?episode-id={episode_id}"
+    info = extract_info(resolved_video_url, cookies_path)
+    if not info:
+        _PRINT(f"{bcolors.FAIL}Failed to extract 7Plus playback information{bcolors.ENDC}")
         return
 
     try:
@@ -720,6 +1355,6 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path, mode="auto"):
         _PRINT(f"{bcolors.FAIL}Failed to parse 7Plus show metadata: {e}{bcolors.ENDC}")
         return
 
-    season_episode_tag = season_episode_from_metadata(alt_tag, episode_id)
-    get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode)
+    season_episode_tag = "" if is_movie_metadata(show_response, episode_id) else season_episode_from_metadata(alt_tag, episode_id)
+    get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode, auto_download, show_response)
     return

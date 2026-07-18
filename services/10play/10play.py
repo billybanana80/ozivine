@@ -6,24 +6,19 @@ import subprocess
 import re
 import os
 import random
-from urllib.parse import urljoin  
+import time
+import hmac
+import hashlib
+from urllib.parse import urljoin, urlparse
 import yaml
+from rich.console import Console
+from rich.rule import Rule
+from rich.text import Text
 from colors import bcolors
 import icons
 from filename_utils import safe_windows_filename
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
-#   Ozivine: 10Play Video Downloader
-#   Author: billybanana
-#   Usage: enter the series/season/episode URL to retrieve the m3u8 Manifest.
-#   eg: https://10play.com.au/south-park/episodes/season-15/episode-6/tpv240705gpchj
-#   Authentication: Login
-#   Geo-Locking: requires an Australian IP address
-#   Quality: up to 1080p
-#   Key Features:
-#   1. Extract Video ID: Parses the 10Play video URL to extract the video id and then fetches the show/movie info from the 10Play API.
-#   2. Print Download Information: Outputs the M3U8 URL required for downloading the video content.
-#   3. Note: this script functions for AES_128 encrypted video files only.
 
 ### Helpers ###
 
@@ -448,6 +443,11 @@ def is_movie(video_data):
 ### End of Helpers ###
 
 CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml"))
+TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "temp"))
+EXPORT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "export"))
+TEN_CONFIG_URL = "https://10.com.au/api/v1/config"
+TEN_API_KEY_HEX = "b918ff793563080c5821c89ee6c415c363cb36d369db1020369ac4b405a0211d"
+console = Console()
 
 # URLs and Headers
 login_url = 'https://10play.com.au/api/user/auth'
@@ -483,14 +483,14 @@ def ensure_10play_cache(config):
 def parse_10play_credentials(credentials):
     creds = (credentials or "").strip()
     if not creds or ":" not in creds:
-        raise ValueError("Missing 10Play credentials. Expected username:password")
+        raise ValueError("Missing 10 credentials. Expected username:password")
 
     username, password = creds.split(":", 1)
     username = username.strip()
     password = password.strip()
 
     if not username or not password:
-        raise ValueError("Invalid 10Play credentials. Expected username:password")
+        raise ValueError("Invalid 10 credentials. Expected username:password")
 
     return username, password
 
@@ -777,15 +777,20 @@ def modify_and_save_m3u8(variant_url, downloads_path):
 
 # Function to format the filename based on video details
 def format_file_name(video_data):
-    show_name = video_data['tvShow'].replace(' ', '.')
-    clip_title = video_data.get('clipTitle', '').replace(' ', '.')
+    show_name = safe_windows_filename(str(video_data.get('tvShow') or "10").replace(' ', '.'))
+    clip_title = safe_windows_filename(str(video_data.get('clipTitle') or '').replace(' ', '.'))
     genre = video_data.get('genre', '').lower()
     season = int(video_data['season'])
 
     if genre == 'movies':
         formatted_file_name = f"{show_name}.1080p.10Play.WEB-DL.AAC2.0.H.264"
     elif genre == 'sport':
-        formatted_file_name = f"{clip_title}.S{season}.1080p.10Play.WEB-DL.AAC2.0.H.264"
+        episode = int(video_data.get('episode') or 0)
+        if episode:
+            season_tag = f"S{season:04d}" if season >= 1000 else f"S{season:02d}"
+            formatted_file_name = f"{show_name}.{season_tag}E{episode:02d}.1080p.10Play.WEB-DL.AAC2.0.H.264"
+        else:
+            formatted_file_name = f"{clip_title or show_name}.S{season}.1080p.10Play.WEB-DL.AAC2.0.H.264"
     else:
         episode = int(video_data['episode'])
         season_episode_tag = f"S{season:02d}E{episode:02d}"
@@ -811,10 +816,51 @@ def expected_output_exists(downloads_path, save_name):
     ]
     return any(os.path.exists(path) for path in candidates)
 
-def display_info(m3u8_file_path, formatted_file_name, master_m3u8_url, original_variant_url, subtitles=None):
+def format_info_date(value):
+    if value in (None, "", "Not Available"):
+        return ""
+    try:
+        if isinstance(value, (int, float)) or str(value).isdigit():
+            parsed = dt.datetime.utcfromtimestamp(int(value))
+        else:
+            parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return f"{parsed.day} {parsed.strftime('%B %Y')}"
+    except Exception:
+        return str(value)
+
+def clean_info_value(value):
+    if value in (None, "", "Not Available"):
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+def print_info_metadata(video_data):
+    if not video_data:
+        return
+
+    show_title = clean_info_value(video_data.get("tvShow") or video_data.get("showTitle"))
+    episode_title = clean_info_value(video_data.get("title") or video_data.get("clipTitle") or video_data.get("vodTitle"))
+    date_aired = format_info_date(video_data.get("published") or video_data.get("datePublished"))
+    description = clean_info_value(video_data.get("description") or video_data.get("abstract"))
+
+    rows = [
+        ("Show", show_title),
+        ("Title", episode_title),
+        ("Date Aired", date_aired),
+        ("Description", description),
+    ]
+    rows = [(label, value) for label, value in rows if value]
+    if not rows:
+        return
+
+    print(f"\n{bcolors.YELLOW}Episode metadata:{bcolors.ENDC}")
+    for label, value in rows:
+        print(f"{bcolors.LIGHTBLUE}{label}: {bcolors.ENDC}{value}")
+
+def display_info(m3u8_file_path, formatted_file_name, master_m3u8_url, original_variant_url, subtitles=None, metadata=None):
     print(f"{bcolors.LIGHTBLUE}FHD M3U8 File: {bcolors.ENDC}{m3u8_file_path}")
     print_streams(get_available_streams(master_m3u8_url))
     print_external_subtitles(subtitles or [])
+    print_info_metadata(metadata or {})
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
     cleanup_temp_m3u8(m3u8_file_path)
 
@@ -828,20 +874,21 @@ def build_download_command(source, downloads_path, save_name, mode="auto"):
     )
     return append_downloader_proxy(download_command)
 
-def display_master_info(master_m3u8_url, formatted_file_name, subtitles=None):
+def display_master_info(master_m3u8_url, formatted_file_name, subtitles=None, metadata=None):
     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{master_m3u8_url}")
     print_streams(get_master_streams(master_m3u8_url))
     print_external_subtitles(subtitles or [])
+    print_info_metadata(metadata or {})
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
 
-def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto", subtitles=None):
+def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False):
     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{master_m3u8_url}")
     download_command = build_download_command(master_m3u8_url, downloads_path, formatted_file_name, mode)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
     print_external_subtitles(subtitles or [])
 
-    user_input = input("Do you wish to download? Y or N: ").strip().lower()
+    user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == 'y':
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
         result = subprocess.run(download_command, shell=True)
@@ -851,7 +898,7 @@ def display_master_download_command(master_m3u8_url, formatted_file_name, downlo
     else:
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
-def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto", subtitles=None):
+def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto", subtitles=None, auto_download=False):
     use_source = m3u8_file_path   # default to local file
     final_save_name = formatted_file_name
     action_master_path = None
@@ -869,16 +916,16 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
     # Pre-flight probe: if it looks bad, pre-switch to master best
     preflight_failed = False if mode == "interactive" else not probe_segment_ok(m3u8_file_path)
     if preflight_failed:
-        print(f"{bcolors.WARNING}First/middle/end segment probe failed — falling back to best available from master.{bcolors.ENDC}")
+        print(f"{bcolors.YELLOW}{icons.ICON_INFO} Preferred 1080p stream is not available; trying next best stream instead.{bcolors.ENDC}")
         best_url, best_h = pick_best_variant(master_m3u8_url)
         if best_url:
             use_source = best_url
             if best_h:
                 final_save_name = replace_resolution_tag(formatted_file_name, best_h)
-            print(f"{bcolors.OKGREEN}Fallback variant:{bcolors.ENDC} {best_h or 'unknown'}p")
-            print(f"{bcolors.OKBLUE}Fallback M3U8 URL:{bcolors.ENDC} {best_url}")
+            print(f"{bcolors.OKGREEN}Selected stream:{bcolors.ENDC} {best_h or 'unknown'}p")
+            print(f"{bcolors.OKBLUE}Selected M3U8 URL:{bcolors.ENDC} {best_url}")
         else:
-            print(f"{bcolors.FAIL}Could not pick a fallback variant from master.{bcolors.ENDC}")
+            print(f"{bcolors.FAIL}Could not pick an alternate stream from the master playlist.{bcolors.ENDC}")
 
     # Build command
     selectors = "" if mode == "interactive" else "--select-video best --select-audio best --select-subtitle all "
@@ -889,11 +936,22 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
     print_external_subtitles(subtitles or [])
 
     download_ok = False
-    user_input = input("Do you wish to download? Y or N: ").strip().lower()
+    user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == 'y':
         # First attempt
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
-        result = subprocess.run(download_command, shell=True)
+        quiet_primary_attempt = (
+            mode != "interactive"
+            and use_source == m3u8_file_path
+            and not preflight_failed
+        )
+        result = subprocess.run(
+            download_command,
+            shell=True,
+            capture_output=quiet_primary_attempt,
+            text=quiet_primary_attempt,
+            errors="replace" if quiet_primary_attempt else None,
+        )
         download_ok = result.returncode == 0
         if result.returncode != 0 and not preflight_failed:
             if expected_output_exists(downloads_path, final_save_name):
@@ -904,7 +962,7 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
                 return
 
             # Runtime fallback: if we *thought* the playlist was fine but the tool failed (404, etc.)
-            print(f"{bcolors.WARNING}Downloader failed; attempting fallback from master...{bcolors.ENDC}")
+            print(f"{bcolors.YELLOW}{icons.ICON_INFO} Preferred 1080p stream is not available; trying next best stream instead.{bcolors.ENDC}")
             best_url, best_h = pick_best_variant(master_m3u8_url)
             if best_url:
                 fallback_save = replace_resolution_tag(formatted_file_name, best_h or 720)
@@ -915,14 +973,14 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
                     f'-mt -M format=mkv --save-dir "{downloads_path}" --save-name "{fallback_save}"'
                 )
                 fb_cmd = append_downloader_proxy(fb_cmd)
-                print(f"{bcolors.YELLOW}FALLBACK DOWNLOAD COMMAND:{bcolors.ENDC}")
+                print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(mask_proxy_command(fb_cmd))
                 fallback_result = subprocess.run(fb_cmd, shell=True)
                 if fallback_result.returncode == 0:
                     final_save_name = fallback_save
                     download_ok = True
             else:
-                print(f"{bcolors.FAIL}Fallback failed: could not parse master playlist.{bcolors.ENDC}")
+                print(f"{bcolors.FAIL}Could not pick an alternate stream from the master playlist.{bcolors.ENDC}")
         if download_ok:
             save_external_subtitles(subtitles or [], downloads_path, final_save_name)
     else:
@@ -959,22 +1017,525 @@ def resolve_video_id_from_page(url):
 
     return None
 
+def get_show_page_data(url):
+    try:
+        response = requests.get(url.replace("10play.com.au", "10.com.au"), timeout=20, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        return {}
+
+    match = re.search(r"const showPageData = ({.*?});", response.text, re.DOTALL)
+    if not match:
+        return {}
+
+    try:
+        return json.loads(match.group(1))
+    except Exception:
+        return {}
+
+def resolve_short_10_movie_video_id(url):
+    data = get_show_page_data(url)
+    video = data.get("video") or {}
+    if str(video.get("genre") or "").lower() != "movies":
+        return None
+    return video.get("urlCode")
+
+def ten_signature_header(url):
+    timestamp = int(time.time())
+    message = f"{timestamp}:{url}".encode("utf-8")
+    api_key = bytes.fromhex(TEN_API_KEY_HEX)
+    signature = hmac.new(api_key, message, hashlib.sha256).hexdigest()
+    return f"{timestamp}_{signature}"
+
+def ten_get(session, url, params=None):
+    signed_headers = {
+        "User-Agent": "10play/7.4.0.500325 Android UAP",
+        "accept": "application/json, text/plain, */*",
+        "tp-acceptfeature": "v1/fw;v1/drm;v2/live",
+        "tp-platform": "UAP",
+        "X-N10-SIG": ten_signature_header(url),
+    }
+    response = session.get(url, headers=signed_headers, params=params, timeout=20)
+    response.raise_for_status()
+    return response.json()
+
+def parse_show_slug(series_url):
+    parsed = urlparse(series_url.replace("10play.com.au", "10.com.au").strip())
+    path_parts = [part for part in parsed.path.split("/") if part]
+    return path_parts[0] if path_parts else ""
+
+def looks_like_10_series_url(video_url):
+    parsed = urlparse(video_url.replace("10play.com.au", "10.com.au").strip())
+    path_parts = [part for part in parsed.path.split("/") if part]
+    return "10.com.au" in parsed.netloc and len(path_parts) == 1 and not path_parts[0].lower().startswith("tpv")
+
+def extract_show_id_from_html(session, series_url):
+    html_headers = {
+        "User-Agent": "Mozilla/5.0 (Ozivine)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    response = session.get(series_url.replace("10play.com.au", "10.com.au"), headers=html_headers, timeout=20)
+    response.raise_for_status()
+
+    match = re.search(r"const showPageData = ({.*?});", response.text, re.DOTALL)
+    if not match:
+        raise ValueError("Failed to parse showPageData from 10 page.")
+
+    data = json.loads(match.group(1))
+    show_id = (data.get("video") or {}).get("showUrlCode") or (data.get("show") or {}).get("urlCode")
+    if not show_id:
+        raise ValueError("showUrlCode/urlCode not found in 10 page data.")
+
+    return show_id
+
+def fetch_ten_endpoints(session):
+    data = ten_get(session, TEN_CONFIG_URL, params={"SystemName": "tvos"})
+    shows_api = data.get("showsApiEndpoint")
+    videos_api = data.get("videosApiEndpoint")
+    if not shows_api or not videos_api:
+        raise ValueError("Ten config missing showsApiEndpoint or videosApiEndpoint.")
+    return shows_api, videos_api
+
+def parse_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+def format_date(value):
+    if value is None:
+        return "Not Available"
+    try:
+        if isinstance(value, (int, float)) or str(value).isdigit():
+            parsed = dt.datetime.utcfromtimestamp(int(value))
+        else:
+            parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.strftime("%d %B %Y")
+    except Exception:
+        return str(value)
+
+def episode_sort_key(episode):
+    season = parse_int(episode.get("season") or episode.get("seasonNumber"))
+    episode_number = parse_int(episode.get("episode") or episode.get("episodeNumber"))
+    published = episode.get("published") or episode.get("datePublished") or 0
+    if isinstance(published, str) and not published.isdigit():
+        try:
+            published = int(dt.datetime.fromisoformat(published.replace("Z", "+00:00")).timestamp())
+        except Exception:
+            published = 0
+    return (season, episode_number, parse_int(published))
+
+def get_season_episode_endpoints(show_data):
+    seasons = show_data.get("seasons") or []
+    endpoints = []
+    for season in seasons:
+        for menu_item in season.get("menuItems", []) or []:
+            if (menu_item.get("menuTitle") or "").lower() == "episodes" and menu_item.get("apiEndpoint"):
+                endpoints.append(menu_item["apiEndpoint"])
+                break
+    return endpoints
+
+def find_video_id(episode):
+    for key in ("id", "urlCode", "videoId", "assetId"):
+        value = episode.get(key)
+        if isinstance(value, str) and value.startswith("tpv"):
+            return value
+    for value in episode.values():
+        if isinstance(value, str) and value.startswith("tpv"):
+            return value
+    return None
+
+def get_episode_url(show_slug, episode, season, episode_number, video_id):
+    episode_path = episode.get("cardLink") or episode.get("webUrl") or episode.get("url")
+    if episode_path:
+        if episode_path.startswith("http"):
+            return episode_path.replace("10play.com.au", "10.com.au")
+        return urljoin("https://10.com.au", episode_path)
+
+    if season and episode_number:
+        return f"https://10.com.au/{show_slug}/episodes/season-{season}/episode-{episode_number}/{video_id}"
+    return f"https://10.com.au/video/{video_id}"
+
+def collect_episode_details(series_url):
+    series_url = series_url.replace("10play.com.au", "10.com.au").split("?", 1)[0]
+    show_slug = parse_show_slug(series_url)
+    if not show_slug:
+        raise ValueError("Could not determine 10 show slug from the URL.")
+
+    with requests.Session() as session:
+        show_id = extract_show_id_from_html(session, series_url)
+        shows_api, videos_api = fetch_ten_endpoints(session)
+        show_data = ten_get(session, f"{shows_api.rstrip('/')}/{show_id}")
+        if isinstance(show_data, list):
+            show_data = show_data[0] if show_data else {}
+
+        endpoints = get_season_episode_endpoints(show_data)
+        if not endpoints:
+            raise ValueError("Could not find any 10 episode endpoints for this show.")
+
+        raw_episodes = []
+        for endpoint in endpoints:
+            data = ten_get(session, endpoint)
+            if isinstance(data, dict):
+                raw_episodes.extend(data.get("items") or data.get("results") or [])
+            elif isinstance(data, list):
+                raw_episodes.extend(data)
+
+        raw_episodes = sorted(raw_episodes, key=episode_sort_key)
+        details = []
+        summaries = []
+        seen_ids = set()
+        for episode in raw_episodes:
+            video_id = find_video_id(episode)
+            if not video_id or video_id in seen_ids:
+                continue
+
+            raw_title = (
+                episode.get("subtitle")
+                or episode.get("vodTitle")
+                or episode.get("title")
+            )
+            raw_season = episode.get("season") or episode.get("seasonNumber")
+            raw_episode = episode.get("episode") or episode.get("episodeNumber")
+            needs_enrichment = not (raw_title and raw_season and raw_episode)
+            video_data = ten_get(session, f"{videos_api.rstrip('/')}/{video_id}") if needs_enrichment else {}
+            show_title = (
+                video_data.get("tvShow")
+                or episode.get("tvShow")
+                or show_data.get("title")
+                or show_slug.replace("-", " ").title()
+            )
+            season = parse_int(video_data.get("season") or raw_season)
+            episode_number = parse_int(video_data.get("episode") or raw_episode)
+            title = (
+                video_data.get("subtitle")
+                or video_data.get("vodTitle")
+                or video_data.get("title")
+                or raw_title
+                or f"Episode {episode_number}"
+            )
+            description = (
+                video_data.get("description")
+                or video_data.get("abstract")
+                or episode.get("description")
+                or episode.get("abstract")
+                or "Not Available"
+            )
+            raw_date = video_data.get("published") or episode.get("published") or episode.get("datePublished")
+            thumbnail = (
+                video_data.get("imageUrl")
+                or video_data.get("posterImageUrl")
+                or (episode.get("cardImage") or {}).get("url")
+                or "Not Available"
+            )
+            season_label = f"Season {season}" if season else "Episodes"
+            episode_url = get_episode_url(show_slug, episode, season, episode_number, video_id)
+
+            details.append({
+                "Video URL": episode_url,
+                "Video ID": video_id,
+                "Show Title": show_title,
+                "Title": title,
+                "Season": season,
+                "Season Label": season_label,
+                "Episode": episode_number,
+                "Episode Label": str(episode_number or "-"),
+                "Date Aired": format_date(raw_date),
+                "Description": description,
+                "Thumbnail": thumbnail,
+                "Sort Episode": episode_number,
+            })
+            summaries.append(f"{show_title} {season_label} Episode {episode_number} ID: {video_id}")
+            seen_ids.add(video_id)
+
+    return show_slug, {
+        "Episode Summary": summaries,
+        "Episode Details": details,
+    }
+
+def save_episode_list_json(show_slug, episode_data):
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    output_path = os.path.join(TEMP_DIR, f"10play_{safe_windows_filename(show_slug)}_episodes.json")
+    with open(output_path, "w", encoding="utf-8") as file:
+        json.dump(episode_data, file, ensure_ascii=False, indent=4)
+    return output_path
+
+def export_episode_list_text(show_slug, episodes):
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_path = os.path.join(EXPORT_DIR, f"10_{safe_windows_filename(show_slug)}_export_{timestamp}.txt")
+
+    with open(output_path, "w", encoding="utf-8") as file:
+        for episode in episodes:
+            label = episode.get("Season Label") or "Episodes"
+            episode_number = episode.get("Episode Label") or episode.get("Episode") or "-"
+            title = episode.get("Title") or "-"
+            url = episode.get("Video URL") or "-"
+            file.write(f"{label} Episode {episode_number} - {title}\n")
+            file.write(f"{url}\n")
+
+    return output_path
+
+def print_episode_list(series_title, episodes):
+    if not episodes:
+        print(f"{bcolors.WARNING}No playable 10 episodes found.{bcolors.ENDC}")
+        return
+
+    tree_style = "grey70"
+    label_style = "bold grey70"
+    header_style = "bright_blue"
+    groups = {}
+    for episode in episodes:
+        label = episode.get("Season Label") or "Episodes"
+        groups.setdefault(label, []).append(episode)
+
+    group_labels = sorted(groups, key=lambda label: parse_int(re.search(r"\d+", label).group(0)) if re.search(r"\d+", label) else 0)
+    for group_episodes in groups.values():
+        group_episodes.sort(key=lambda item: item.get("Sort Episode") or item.get("Episode") or 0)
+
+    season_summary = ",  ".join(f"{label}({len(groups[label])})" for label in group_labels)
+    console.print(Rule(Text.assemble(("10 Series: ", f"bold {header_style}"), (series_title, "bold white")), style=header_style))
+    console.print()
+    console.print(
+        Text.assemble(
+            (f"{len(group_labels)} Seasons", label_style),
+            (f",  {season_summary}" if season_summary else "", "white"),
+        )
+    )
+
+    for group_index, label in enumerate(group_labels):
+        if group_index > 0:
+            console.print(Text("│", style=tree_style))
+
+        group_is_last = group_index == len(group_labels) - 1
+        group_branch = "└─" if group_is_last else "├─"
+        group_child_prefix = "   " if group_is_last else "│  "
+        group_episodes = groups[label]
+        console.print(Text.assemble((f"{group_branch} ", tree_style), (f"{label}: ", label_style), (f"{len(group_episodes)} episodes", "white")))
+
+        for index, episode in enumerate(group_episodes):
+            is_last = index == len(group_episodes) - 1
+            branch = "└─" if is_last else "├─"
+            url_branch = "  " if is_last else "│ "
+            console.print(
+                Text.assemble(
+                    (group_child_prefix, tree_style),
+                    (f"{branch} ", tree_style),
+                    (f"{episode.get('Episode Label') or '-'}. ", label_style),
+                    (episode.get("Title") or "-", "white"),
+                )
+            )
+            console.print(
+                Text.assemble(
+                    (group_child_prefix, tree_style),
+                    (f"{url_branch} ", tree_style),
+                    (episode.get("Video URL") or "-", "bright_blue"),
+                )
+            )
+
+def list_show_episodes(series_url, export_list=False):
+    print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
+    show_slug, episode_data = collect_episode_details(series_url)
+    episodes = episode_data["Episode Details"]
+    series_title = episodes[0].get("Show Title") if episodes else show_slug.replace("-", " ").title()
+    output_path = save_episode_list_json(show_slug, episode_data)
+
+    try:
+        console.print()
+        print_episode_list(series_title, episodes)
+        print(f"\n{bcolors.OKGREEN}{icons.ICON_SUCCESS} Found {len(episodes)} episode(s){bcolors.ENDC}")
+        if export_list:
+            export_path = export_episode_list_text(show_slug, episodes)
+            print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Exported list: {export_path}{bcolors.ENDC}")
+    finally:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+def parse_selector_part(selector_part):
+    match = re.fullmatch(r"s(?P<season>\d{2}|\d{4})(?:e(?P<episode>\d{2}))?", selector_part)
+    if not match:
+        raise ValueError(
+            "Download selector must be sXXeXX, sXXXXeXX, sXX, sXXXX, or a matching range. "
+            "Examples: s01e01, s2026e01, s01, s2026, s01e03-s02e02, s01-s03"
+        )
+
+    return {
+        "season": int(match.group("season")),
+        "episode": int(match.group("episode")) if match.group("episode") else None,
+    }
+
+def parse_download_selector(selector):
+    selector = str(selector or "").strip().lower()
+    if "-" not in selector:
+        part = parse_selector_part(selector)
+        return {
+            "type": "single_episode" if part["episode"] is not None else "single_season",
+            "start": part,
+            "end": part,
+        }
+
+    range_parts = selector.split("-", 1)
+    if not range_parts[0] or not range_parts[1]:
+        raise ValueError(
+            "Download range must include both start and end selectors. "
+            "Examples: s01e03-s02e02 or s01-s03"
+        )
+
+    start = parse_selector_part(range_parts[0])
+    end = parse_selector_part(range_parts[1])
+    start_has_episode = start["episode"] is not None
+    end_has_episode = end["episode"] is not None
+
+    if start_has_episode != end_has_episode:
+        raise ValueError("Download range must use two episode selectors or two season selectors.")
+
+    if start_has_episode:
+        if (start["season"], start["episode"]) > (end["season"], end["episode"]):
+            raise ValueError("Download episode range start must be before the end selector.")
+        return {"type": "episode_range", "start": start, "end": end}
+
+    if start["season"] > end["season"]:
+        raise ValueError("Download season range start must be before the end selector.")
+    return {"type": "season_range", "start": start, "end": end}
+
+def format_selector_part(part):
+    season = part["season"]
+    season_label = f"s{season:04d}" if season >= 1000 else f"s{season:02d}"
+    if part["episode"] is not None:
+        return f"{season_label}e{part['episode']:02d}"
+    return season_label
+
+def format_download_selector(parsed_selector):
+    if parsed_selector["start"] == parsed_selector["end"]:
+        return format_selector_part(parsed_selector["start"])
+    return f"{format_selector_part(parsed_selector['start'])}-{format_selector_part(parsed_selector['end'])}"
+
+def format_queue_selector(season, episode=None):
+    season_label = f"S{season:04d}" if season >= 1000 else f"S{season:02d}"
+    if episode is not None:
+        return f"{season_label}E{episode:02d}"
+    return season_label
+
+def warn_if_partial_range_match(parsed_selector, selected):
+    if parsed_selector["type"] == "episode_range":
+        requested_start = (parsed_selector["start"]["season"], parsed_selector["start"]["episode"])
+        requested_end = (parsed_selector["end"]["season"], parsed_selector["end"]["episode"])
+        matched_start = (int(selected[0].get("Season") or 0), int(selected[0].get("Episode") or 0))
+        matched_end = (int(selected[-1].get("Season") or 0), int(selected[-1].get("Episode") or 0))
+        if matched_start > requested_start or matched_end < requested_end:
+            matched_label = f"{format_queue_selector(*matched_start)}-{format_queue_selector(*matched_end)}"
+            print(f"{bcolors.WARNING}{icons.ICON_WARNING} Requested range {format_download_selector(parsed_selector)} only matched {matched_label}.{bcolors.ENDC}")
+
+    if parsed_selector["type"] == "season_range":
+        requested_start = parsed_selector["start"]["season"]
+        requested_end = parsed_selector["end"]["season"]
+        matched_seasons = sorted({int(item.get("Season") or 0) for item in selected})
+        if matched_seasons[0] > requested_start or matched_seasons[-1] < requested_end:
+            matched_label = f"{format_queue_selector(matched_seasons[0])}-{format_queue_selector(matched_seasons[-1])}"
+            print(f"{bcolors.WARNING}{icons.ICON_WARNING} Requested range {format_download_selector(parsed_selector)} only matched seasons {matched_label}.{bcolors.ENDC}")
+
+def get_series_episodes(series_url):
+    show_slug, episode_data = collect_episode_details(series_url)
+    return show_slug, episode_data["Episode Details"]
+
+def select_episodes(series_url, selector):
+    parsed_selector = parse_download_selector(selector)
+    show_slug, episodes = get_series_episodes(series_url)
+    selected = []
+    for item in episodes:
+        season = int(item.get("Season") or 0)
+        episode = int(item.get("Episode") or 0)
+        if episode <= 0:
+            continue
+
+        if parsed_selector["type"] == "single_episode":
+            keep = season == parsed_selector["start"]["season"] and episode == parsed_selector["start"]["episode"]
+        elif parsed_selector["type"] == "single_season":
+            keep = season == parsed_selector["start"]["season"]
+        elif parsed_selector["type"] == "episode_range":
+            keep = (
+                (parsed_selector["start"]["season"], parsed_selector["start"]["episode"])
+                <= (season, episode)
+                <= (parsed_selector["end"]["season"], parsed_selector["end"]["episode"])
+            )
+        else:
+            keep = parsed_selector["start"]["season"] <= season <= parsed_selector["end"]["season"]
+
+        if keep:
+            selected.append(item)
+
+    if not selected:
+        normalized = format_download_selector(parsed_selector)
+        series_title = episodes[0].get("Show Title") if episodes else show_slug.replace("-", " ").title()
+        raise LookupError(f"No 10 episodes found for selector {normalized} in {series_title}.")
+
+    selected.sort(key=lambda item: (int(item.get("Season") or 0), int(item.get("Episode") or 0)))
+    warn_if_partial_range_match(parsed_selector, selected)
+    return selected
+
+def print_download_queue(episodes):
+    console.print()
+    console.print(Text("Download queue:", style="bold bright_blue"))
+    for episode in episodes:
+        season = int(episode.get("Season") or 0)
+        episode_number = int(episode.get("Episode") or 0)
+        season_label = f"S{season:04d}" if season >= 1000 else f"S{season:02d}"
+        console.print(
+            Text.assemble(
+                (f"{season_label}E{episode_number:02d} ", "bold grey70"),
+                (episode.get("Title") or "-", "white"),
+            )
+        )
+
+def download_selected_episodes(series_url, selector, downloads_path, credentials):
+    print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
+    try:
+        episodes = select_episodes(series_url, selector)
+    except LookupError as error:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} {error}{bcolors.ENDC}")
+        return
+    print_download_queue(episodes)
+
+    user_input = input(f"\nDownload {len(episodes)} episode(s)? Y or N: ").strip().lower()
+    if user_input != "y":
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
+        return
+
+    for index, episode in enumerate(episodes, start=1):
+        print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {episode.get('Title') or episode.get('Video URL')}{bcolors.ENDC}")
+        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True)
+
 # Main logic
-def main(video_url, downloads_path, credentials, mode="auto"):
+def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False):
+    if mode == "list":
+        list_show_episodes(video_url, export_list)
+        return
+
+    if mode == "download":
+        download_selected_episodes(video_url, download_selector, downloads_path, credentials)
+        return
+
     config = load_config()
     video_id = extract_video_id(video_url)
     
     if not video_id:
-        print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Invalid URL. Please enter a valid 10Play video URL.{bcolors.ENDC}")
+        print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Invalid URL. Please enter a valid 10 video URL.{bcolors.ENDC}")
         return
 
     token = get_bearer_token(config, credentials)
     if token:
         if not video_id.lower().startswith("tpv"):
-            resolved_video_id = resolve_video_id_from_page(video_url)
+            is_short_show_page = looks_like_10_series_url(video_url)
+            resolved_video_id = resolve_short_10_movie_video_id(video_url)
+            if not resolved_video_id and not is_short_show_page:
+                resolved_video_id = resolve_video_id_from_page(video_url)
             if resolved_video_id:
                 video_id = resolved_video_id
                 print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Resolved page to video ID: {video_id}{bcolors.ENDC}")
+            elif is_short_show_page:
+                print(f"{bcolors.WARNING}{icons.ICON_WARNING} 10 series URLs need a flag.{bcolors.ENDC}")
+                print(f"{bcolors.YELLOW}{icons.ICON_INFO} Use -l to list episodes or -d with a selector to download from a series.{bcolors.ENDC}")
+                return
 
         manifest_url, video_data = extract_video_details(video_id, token, video_url)
         if manifest_url and video_data:
@@ -987,9 +1548,9 @@ def main(video_url, downloads_path, credentials, mode="auto"):
                     formatted_file_name = replace_resolution_tag(formatted_file_name, best_h)
 
                 if mode == "info":
-                    display_master_info(manifest_url, formatted_file_name, subtitles)
+                    display_master_info(manifest_url, formatted_file_name, subtitles, video_data)
                 else:
-                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles)
+                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download)
                 return
 
             variant_url = download_and_select_variant(manifest_url)
@@ -1000,9 +1561,9 @@ def main(video_url, downloads_path, credentials, mode="auto"):
                     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{manifest_url}")
                     print(f"{bcolors.LIGHTBLUE}SD M3U8 URL: {bcolors.ENDC}{original_variant_url}")
                     if mode == "info":
-                        display_info(local_m3u8_file, formatted_file_name, manifest_url, original_variant_url, subtitles)
+                        display_info(local_m3u8_file, formatted_file_name, manifest_url, original_variant_url, subtitles, video_data)
                     else:
-                        display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url, mode, subtitles)
+                        display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url, mode, subtitles, auto_download)
                 else:
                     print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Failed to modify and save the variant M3U8{bcolors.ENDC}")
             else:

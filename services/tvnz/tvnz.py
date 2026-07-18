@@ -6,15 +6,20 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 import jwt
 import requests
 import urllib3
 import yaml
+from rich.console import Console
+from rich.rule import Rule
+from rich.text import Text
 
 from colors import bcolors
 import icons
+from filename_utils import safe_windows_filename
 
 from services.proxy import append_downloader_proxy, mask_proxy_command
 from pywidevine.cdm import Cdm
@@ -23,25 +28,12 @@ from pywidevine.pssh import PSSH
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#   Ozivine: TVNZ Video Downloader
-#   Author: billybanana
-#   Usage: enter the movie/series/season/episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
-#   eg: TV Shows https://www.tvnz.co.nz/player/tvepisode/tauranga-hilltop or Movies https://www.tvnz.co.nz/player/movie/the-creator or Sport https://www.tvnz.co.nz/player/event/spb-race-2-ssp-race-2-sbk-race-2
-#   Authentication: Tokens
-#   Geo-Locking: requires a New Zealand IP address
-#   Quality: up to 1080p
-#   Key Features:
-#   1. Extract Video ID: Parses the TVNZ URL to extract the series name, season, and episode number, and then fetches the metadata from the TVNZ API.
-#   2. Extract PSSH: Retrieves and parses the MPD file to extract the PSSH data necessary for Widevine decryption.
-#   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
-#   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
-#   5. Note: this script functions for both encrypted and non-encrypted video files (majority of TVZN content is encrypted).
-#   6. Note: TVNZ no longer uses a username/password or cookies to authenticate your account. They are now using your browser's local storage, so they need to be extracted once before being cached for future use.
-#   It is recommneded to have a separate user account for this script and not share the same account with your browser and the sessions cannot be shared between the two.
-
 DOWNLOAD_DIR = None
 WVD_DEVICE_PATH = None
 LOCAL_STORAGE_PATH = None
+TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "temp"))
+EXPORT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "export"))
+console = Console()
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -54,6 +46,8 @@ ENDPOINTS = {
     "register": "https://watch-cdn.edge-api.tvnz.co.nz/device/app/register",
     "refresh": "https://rest-prod-tvnz.evergentpd.com/tvnz/refreshToken",
     "catalog": "https://data-store-cdn.cms-api.tvnz.co.nz/content/urn/resource/catalog",
+    "seasons": "https://data-store-cdn.cms-api.tvnz.co.nz/content/series/{series_id}/seasons",
+    "episodes": "https://data-store-cdn.cms-api.tvnz.co.nz/content/series/{series_id}/episodes",
     "entitlements": "https://rest-prod-tvnz.evergentpd.com/tvnz/getEntitlements",
     "contact": "https://rest-prod-tvnz.evergentpd.com/tvnz/getContact",
     "oauth": "https://watch-cdn.edge-api.tvnz.co.nz/oauth2/token",
@@ -704,6 +698,43 @@ def print_streams(streams):
             f"{stream['lang']:<6}"
         )
 
+def clean_info_value(value):
+    value = clean_text(first_name(value) if isinstance(value, (list, dict)) else value)
+    return re.sub(r"\s+", " ", value).strip()
+
+def format_info_date(value):
+    value = clean_info_value(value)
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return f"{parsed.day} {parsed.strftime('%B %Y')}"
+    except Exception:
+        return value
+
+def print_info_metadata(video):
+    if not video:
+        return
+
+    show_title = clean_info_value(video.get("lostl") or video.get("lok"))
+    episode_title = clean_info_value(video.get("lodn") or video.get("lon") or video.get("nu"))
+    date_aired = format_info_date(video.get("oadt") or video.get("adte") or video.get("broadcastDateTime") or video.get("r"))
+    description = clean_info_value(video.get("losd") or video.get("lold") or video.get("sd") or video.get("synopsis"))
+
+    rows = [
+        ("Show", show_title),
+        ("Title", episode_title),
+        ("Date Aired", date_aired),
+        ("Description", description),
+    ]
+    rows = [(label, value) for label, value in rows if value]
+    if not rows:
+        return
+
+    print(f"\n{bcolors.YELLOW}Episode metadata:{bcolors.ENDC}")
+    for label, value in rows:
+        print(f"{bcolors.LIGHTBLUE}{label}: {bcolors.ENDC}{value}")
+
 def build_download_command(mpd_url, formatted_file_name, keys, mode="auto"):
     selectors = "" if mode == "interactive" else '--select-video best --select-audio best -da role="Description" --select-subtitle all '
     download_command = (
@@ -719,7 +750,7 @@ def build_download_command(mpd_url, formatted_file_name, keys, mode="auto"):
 
     return append_downloader_proxy(download_command)
 
-def get_download_command(video_url, mode="auto"):
+def get_download_command(video_url, mode="auto", auto_download=False):
     api = TVNZAPI()
     api.authenticate()
 
@@ -744,6 +775,7 @@ def get_download_command(video_url, mode="auto"):
 
     if mode == "info":
         print_streams(api.get_mpd_streams(mpd_url))
+        print_info_metadata(video)
         print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
         return
 
@@ -752,7 +784,7 @@ def get_download_command(video_url, mode="auto"):
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
 
-    user_input = input("Do you wish to download? Y or N: ").strip().lower()
+    user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == "y":
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
         result = subprocess.run(download_command, shell=True)
@@ -762,12 +794,417 @@ def get_download_command(video_url, mode="auto"):
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
 
-def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="auto"):
+def clean_text(text):
+    if not text:
+        return ""
+    return (
+        str(text)
+        .replace("\u2019", "'")
+        .replace("\u2018", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .strip()
+    )
+
+def parse_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def extract_series_title_path(series_url):
+    series_url = series_url.strip()
+    path = series_url if series_url.startswith("/") else urlparse(series_url).path
+    path = path.replace("/player/", "/").rstrip("/")
+    match = re.match(r"^/tvseries/([\w-]+)$", path)
+    if not match:
+        raise ValueError("Invalid TVNZ series URL. Expected format like: https://www.tvnz.co.nz/tvseries/grand-designs-new-zealand")
+    return path, match.group(1)
+
+def looks_like_tvnz_series_url(video_url):
+    path = video_url if video_url.startswith("/") else urlparse(video_url).path
+    path = path.replace("/player/", "/").rstrip("/")
+    return bool(re.match(r"^/tvseries/[\w-]+$", path))
+
+def catalogue_fetch_json(session, url, params=None):
+    response = session.get(url, params=params, timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+def fetch_series(session, title_path):
+    data = catalogue_fetch_json(session, ENDPOINTS["catalog"] + title_path, CATALOG_PARAMS)
+    series = data.get("data") or {}
+    series_id = series.get("id")
+    if not series_id:
+        raise ValueError("Could not find TVNZ series ID in catalogue response.")
+    show_title = clean_text(first_name(series.get("lon")) or first_name(series.get("lodn")) or title_path.split("/")[-1].replace("-", " ").title())
+    return series_id, show_title
+
+def fetch_seasons(session, series_id):
+    params = {
+        **CATALOG_PARAMS,
+        "pageNumber": "1",
+        "pageSize": "99",
+        "sortBy": "asc",
+        "sortOrder": "desc",
+    }
+    data = catalogue_fetch_json(session, ENDPOINTS["seasons"].format(series_id=series_id), params)
+    seasons = data.get("data") or []
+    return [season for season in seasons if season.get("id")]
+
+def fetch_episodes_for_season(session, series_id, season_id):
+    params = {
+        **CATALOG_PARAMS,
+        "seasonId": season_id,
+        "pageNumber": "1",
+        "pageSize": "99",
+        "sortBy": "epnum",
+        "sortOrder": "asc",
+    }
+    data = catalogue_fetch_json(session, ENDPOINTS["episodes"].format(series_id=series_id), params)
+    return data.get("data") or []
+
+def get_thumbnail(episode):
+    image_id = episode.get("id")
+    aspect = "0-16x9"
+    if isinstance(episode.get("ia"), list) and episode["ia"]:
+        aspect = episode["ia"][0]
+    if not image_id:
+        return ""
+    return f"https://image-resizer-cloud-cdn.cms-api.tvnz.co.nz/image/{image_id}/{aspect}.jpg?width=320"
+
+def episode_to_list_item(episode, show_title):
+    video_id = episode.get("nu") or episode.get("id") or ""
+    season_number = episode.get("snum") or ""
+    episode_number = episode.get("epnum") or ""
+    ctype = episode.get("cty") or "tvepisode"
+    episode_name = clean_text(first_name(episode.get("lodn")) or first_name(episode.get("lon")))
+    fallback_title = f"Season {season_number} Episode {episode_number}".strip()
+    title = episode_name or fallback_title
+    air_date = episode.get("oadt") or episode.get("adte") or episode.get("broadcastDateTime") or episode.get("r") or ""
+    description = clean_text(first_name(episode.get("losd")) or first_name(episode.get("lold")) or first_name(episode.get("sd")) or episode.get("synopsis"))
+
+    return {
+        "Video URL": f"https://www.tvnz.co.nz/{ctype}/{video_id}" if video_id else "",
+        "Video ID": video_id,
+        "Show Title": show_title,
+        "Season": season_number,
+        "Season Label": f"Season {season_number}" if season_number != "" else "Episodes",
+        "Episode": episode_number,
+        "Episode Label": str(episode_number) if episode_number != "" else "-",
+        "Sort Season": parse_int(season_number) or 0,
+        "Sort Episode": parse_int(episode_number) or 0,
+        "Title": title,
+        "Description": description,
+        "Date Aired": air_date,
+        "Thumbnail": get_thumbnail(episode),
+    }
+
+def collect_episode_details(series_url):
+    title_path, show_slug = extract_series_title_path(series_url)
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    series_id, show_title = fetch_series(session, title_path)
+    seasons = fetch_seasons(session, series_id)
+
+    episodes = []
+    for season in seasons:
+        for episode in fetch_episodes_for_season(session, series_id, season["id"]):
+            item = episode_to_list_item(episode, show_title)
+            if item["Video ID"]:
+                episodes.append(item)
+
+    episodes.sort(key=lambda item: (item.get("Sort Season") or 0, item.get("Sort Episode") or 0, item.get("Title") or ""))
+    episode_data = {
+        "Episode Summary": [
+            f"{episode['Season Label']} Episode {episode['Episode Label']} - {episode['Title']}"
+            for episode in episodes
+        ],
+        "Episode Details": episodes,
+    }
+    return show_slug, episode_data
+
+def save_episode_list_json(show_slug, episode_data):
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    output_path = os.path.join(TEMP_DIR, f"tvnz_{safe_windows_filename(show_slug)}_episodes.json")
+    with open(output_path, "w", encoding="utf-8") as file:
+        json.dump(episode_data, file, ensure_ascii=False, indent=4)
+    return output_path
+
+def export_episode_list_text(show_slug, episodes):
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    safe_slug = safe_windows_filename(show_slug)
+    output_path = os.path.join(EXPORT_DIR, f"tvnz_{safe_slug}_export_{timestamp}.txt")
+
+    with open(output_path, "w", encoding="utf-8") as file:
+        for episode in episodes:
+            label = episode.get("Season Label") or "Episodes"
+            episode_number = episode.get("Episode Label") or "-"
+            title = episode.get("Title") or "-"
+            url = episode.get("Video URL") or "-"
+            file.write(f"{label} Episode {episode_number} - {title}\n")
+            file.write(f"{url}\n")
+
+    return output_path
+
+def print_episode_list(series_title, episodes):
+    if not episodes:
+        print(f"{bcolors.WARNING}No playable TVNZ episodes found.{bcolors.ENDC}")
+        return
+
+    tree_style = "grey70"
+    label_style = "bold grey70"
+    header_style = "bright_blue"
+    groups = {}
+    for episode in episodes:
+        label = episode.get("Season Label") or "Episodes"
+        groups.setdefault(label, []).append(episode)
+
+    group_labels = sorted(groups, key=lambda label: parse_int(re.search(r"\d+", label).group(0)) if re.search(r"\d+", label) else 0)
+    for group_episodes in groups.values():
+        group_episodes.sort(key=lambda item: item.get("Sort Episode") or item.get("Episode") or 0)
+
+    season_summary = ",  ".join(f"{label}({len(groups[label])})" for label in group_labels)
+    console.print(Rule(Text.assemble(("TVNZ Series: ", f"bold {header_style}"), (series_title, "bold white")), style=header_style))
+    console.print()
+    console.print(
+        Text.assemble(
+            (f"{len(group_labels)} Seasons", label_style),
+            (f",  {season_summary}" if season_summary else "", "white"),
+        )
+    )
+
+    for group_index, label in enumerate(group_labels):
+        if group_index > 0:
+            console.print(Text("│", style=tree_style))
+
+        group_is_last = group_index == len(group_labels) - 1
+        group_branch = "└─" if group_is_last else "├─"
+        group_child_prefix = "   " if group_is_last else "│  "
+        group_episodes = groups[label]
+        console.print(Text.assemble((f"{group_branch} ", tree_style), (f"{label}: ", label_style), (f"{len(group_episodes)} episodes", "white")))
+
+        for index, episode in enumerate(group_episodes):
+            is_last = index == len(group_episodes) - 1
+            branch = "└─" if is_last else "├─"
+            url_branch = "  " if is_last else "│ "
+            console.print(
+                Text.assemble(
+                    (group_child_prefix, tree_style),
+                    (f"{branch} ", tree_style),
+                    (f"{episode.get('Episode Label') or '-'}. ", label_style),
+                    (episode.get("Title") or "-", "white"),
+                )
+            )
+            console.print(
+                Text.assemble(
+                    (group_child_prefix, tree_style),
+                    (f"{url_branch} ", tree_style),
+                    (episode.get("Video URL") or "-", "bright_blue"),
+                )
+            )
+
+def list_show_episodes(series_url, export_list=False):
+    print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
+    show_slug, episode_data = collect_episode_details(series_url)
+    episodes = episode_data["Episode Details"]
+    series_title = episodes[0].get("Show Title") if episodes else show_slug.replace("-", " ").title()
+    output_path = save_episode_list_json(show_slug, episode_data)
+
+    try:
+        console.print()
+        print_episode_list(series_title, episodes)
+        print(f"\n{bcolors.OKGREEN}{icons.ICON_SUCCESS} Found {len(episodes)} episode(s){bcolors.ENDC}")
+        if export_list:
+            export_path = export_episode_list_text(show_slug, episodes)
+            print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Exported list: {export_path}{bcolors.ENDC}")
+    finally:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+def parse_selector_part(selector_part):
+    match = re.fullmatch(r"s(?P<season>\d{2}|\d{4})(?:e(?P<episode>\d{2}))?", selector_part)
+    if not match:
+        raise ValueError(
+            "Download selector must be sXXeXX, sXXXXeXX, sXX, sXXXX, or a matching range. "
+            "Examples: s01e01, s2026e01, s01, s2026, s01e03-s02e02, s01-s03"
+        )
+
+    return {
+        "season": int(match.group("season")),
+        "episode": int(match.group("episode")) if match.group("episode") else None,
+    }
+
+def parse_download_selector(selector):
+    selector = str(selector or "").strip().lower()
+    if "-" not in selector:
+        part = parse_selector_part(selector)
+        return {
+            "type": "single_episode" if part["episode"] is not None else "single_season",
+            "start": part,
+            "end": part,
+        }
+
+    range_parts = selector.split("-", 1)
+    if not range_parts[0] or not range_parts[1]:
+        raise ValueError(
+            "Download range must include both start and end selectors. "
+            "Examples: s01e03-s02e02 or s01-s03"
+        )
+
+    start = parse_selector_part(range_parts[0])
+    end = parse_selector_part(range_parts[1])
+    start_has_episode = start["episode"] is not None
+    end_has_episode = end["episode"] is not None
+
+    if start_has_episode != end_has_episode:
+        raise ValueError("Download range must use two episode selectors or two season selectors.")
+
+    if start_has_episode:
+        if (start["season"], start["episode"]) > (end["season"], end["episode"]):
+            raise ValueError("Download episode range start must be before the end selector.")
+        return {"type": "episode_range", "start": start, "end": end}
+
+    if start["season"] > end["season"]:
+        raise ValueError("Download season range start must be before the end selector.")
+    return {"type": "season_range", "start": start, "end": end}
+
+def format_selector_part(part):
+    season = part["season"]
+    season_label = f"s{season:04d}" if season >= 1000 else f"s{season:02d}"
+    if part["episode"] is not None:
+        return f"{season_label}e{part['episode']:02d}"
+    return season_label
+
+def format_download_selector(parsed_selector):
+    if parsed_selector["start"] == parsed_selector["end"]:
+        return format_selector_part(parsed_selector["start"])
+    return f"{format_selector_part(parsed_selector['start'])}-{format_selector_part(parsed_selector['end'])}"
+
+def format_queue_selector(season, episode=None):
+    season_label = f"S{season:04d}" if season >= 1000 else f"S{season:02d}"
+    if episode is not None:
+        return f"{season_label}E{episode:02d}"
+    return season_label
+
+def warn_if_partial_range_match(parsed_selector, selected):
+    if parsed_selector["type"] == "episode_range":
+        requested_start = (parsed_selector["start"]["season"], parsed_selector["start"]["episode"])
+        requested_end = (parsed_selector["end"]["season"], parsed_selector["end"]["episode"])
+        matched_start = (parse_int(selected[0].get("Season")) or 0, parse_int(selected[0].get("Episode")) or 0)
+        matched_end = (parse_int(selected[-1].get("Season")) or 0, parse_int(selected[-1].get("Episode")) or 0)
+        if matched_start > requested_start or matched_end < requested_end:
+            matched_label = f"{format_queue_selector(*matched_start)}-{format_queue_selector(*matched_end)}"
+            print(f"{bcolors.WARNING}{icons.ICON_WARNING} Requested range {format_download_selector(parsed_selector)} only matched {matched_label}.{bcolors.ENDC}")
+
+    if parsed_selector["type"] == "season_range":
+        requested_start = parsed_selector["start"]["season"]
+        requested_end = parsed_selector["end"]["season"]
+        matched_seasons = sorted({parse_int(item.get("Season")) or 0 for item in selected})
+        if matched_seasons[0] > requested_start or matched_seasons[-1] < requested_end:
+            matched_label = f"{format_queue_selector(matched_seasons[0])}-{format_queue_selector(matched_seasons[-1])}"
+            print(f"{bcolors.WARNING}{icons.ICON_WARNING} Requested range {format_download_selector(parsed_selector)} only matched seasons {matched_label}.{bcolors.ENDC}")
+
+def select_episodes(series_url, selector):
+    parsed_selector = parse_download_selector(selector)
+    _, episode_data = collect_episode_details(series_url)
+    episodes = episode_data["Episode Details"]
+
+    selected = []
+    for episode in episodes:
+        season = parse_int(episode.get("Season"))
+        episode_number = parse_int(episode.get("Episode"))
+        if season is None or episode_number is None:
+            continue
+
+        if parsed_selector["type"] == "single_episode":
+            keep = season == parsed_selector["start"]["season"] and episode_number == parsed_selector["start"]["episode"]
+        elif parsed_selector["type"] == "single_season":
+            keep = season == parsed_selector["start"]["season"]
+        elif parsed_selector["type"] == "episode_range":
+            keep = (
+                (parsed_selector["start"]["season"], parsed_selector["start"]["episode"])
+                <= (season, episode_number)
+                <= (parsed_selector["end"]["season"], parsed_selector["end"]["episode"])
+            )
+        else:
+            keep = parsed_selector["start"]["season"] <= season <= parsed_selector["end"]["season"]
+
+        if keep:
+            selected.append(episode)
+
+    if not selected:
+        normalized = format_download_selector(parsed_selector)
+        series_title = episodes[0].get("Show Title") if episodes else extract_series_title_path(series_url)[1].replace("-", " ").title()
+        raise LookupError(f"No TVNZ episodes found for selector {normalized} in {series_title}.")
+
+    selected.sort(key=lambda item: (item.get("Sort Season") or 0, item.get("Sort Episode") or 0, item.get("Title") or ""))
+    warn_if_partial_range_match(parsed_selector, selected)
+    return selected
+
+def format_queue_label(episode):
+    season = parse_int(episode.get("Season"))
+    episode_number = parse_int(episode.get("Episode"))
+    title = episode.get("Title") or episode.get("Video URL") or "-"
+
+    if season is not None and episode_number is not None:
+        return f"S{season:02d}E{episode_number:02d} {title}"
+    if episode_number is not None:
+        return f"E{episode_number:02d} {title}"
+    return title
+
+def print_download_queue(episodes):
+    print(f"\n{bcolors.YELLOW}Download queue:{bcolors.ENDC}")
+    for episode in episodes:
+        print(f"{format_queue_label(episode)}")
+
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, local_storage_path):
+    print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
+    try:
+        episodes = select_episodes(series_url, selector)
+    except LookupError as error:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} {error}{bcolors.ENDC}")
+        return
+    print_download_queue(episodes)
+
+    user_input = input(f"\nDownload {len(episodes)} episode(s)? Y or N: ").strip().lower()
+    if user_input != "y":
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
+        return
+
+    for index, episode in enumerate(episodes, start=1):
+        print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {format_queue_label(episode)}{bcolors.ENDC}")
+        main(
+            episode["Video URL"],
+            downloads_path,
+            wvd_device_path,
+            local_storage_path,
+            mode="auto",
+            export_list=False,
+            download_selector=None,
+            auto_download=True,
+        )
+
+def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="auto", export_list=False, download_selector=None, auto_download=False):
     global DOWNLOAD_DIR, WVD_DEVICE_PATH, LOCAL_STORAGE_PATH
     
     DOWNLOAD_DIR = downloads_path
     WVD_DEVICE_PATH = wvd_device_path
     LOCAL_STORAGE_PATH = local_storage_path
 
-    get_download_command(video_url, mode)
+    if mode == "list":
+        list_show_episodes(video_url, export_list)
+        return
+
+    if mode == "download":
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, local_storage_path)
+        return
+
+    if looks_like_tvnz_series_url(video_url):
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} TVNZ series URLs need a flag.{bcolors.ENDC}")
+        print(f"{bcolors.YELLOW}{icons.ICON_INFO} Use -l to list episodes or -d with a selector to download from a series.{bcolors.ENDC}")
+        return
+
+    get_download_command(video_url, mode, auto_download)
 

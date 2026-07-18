@@ -18,7 +18,8 @@
 - [x] Login credential support where required
 - [x] Optional proxy support for Australian and New Zealand services
 - [x] Info and action modes for previewing or manually selecting available streams
-- [x] Supported sites: ABC iView, 7Plus, 9Now, 10Play, SBS On Demand, ThreeNow, and TVNZ
+- [x] SBS, ABC iView, 7Plus, 9Now, 10, ThreeNow, and TVNZ list mode for viewing available show episodes before choosing a download
+- [x] Supported sites: ABC iView, 7Plus, 9Now, 10, SBS On Demand, ThreeNow, and TVNZ
 
 ## Requirements
 
@@ -104,7 +105,7 @@ Proxy routing is selected automatically from the input video URL:
 
 | Region | Services |
 | --- | --- |
-| AU | ABC iView, 7Plus, 9Now, 10Play, SBS On Demand |
+| AU | ABC iView, 7Plus, 9Now, 10, SBS On Demand |
 | NZ | ThreeNow, TVNZ |
 
 Set proxy support in `config.yaml`:
@@ -207,7 +208,7 @@ Service notes:
 
 - ABC iView and 9Now can be used without an account.
 - 7Plus requires cookies from a logged-in free account.
-- 10Play and SBS require login/account data.
+- 10 and SBS require login/account data.
 - TVNZ requires local storage token.
 - ThreeNow requires a login to navigate the site.
 
@@ -234,22 +235,10 @@ Supported service home pages:
 | ABC iView | https://iview.abc.net.au |
 | 7Plus | https://7plus.com.au |
 | 9Now | https://www.9now.com.au |
-| 10Play | https://10.com.au |
+| 10 | https://10.com.au |
 | SBS On Demand | https://www.sbs.com.au/ondemand |
 | ThreeNow | https://www.threenow.co.nz |
 | TVNZ | https://www.tvnz.co.nz |
-
-Example video URLs:
-
-```text
-https://iview.abc.net.au/video/LE2427H007S00
-https://7plus.com.au/below-deck-down-under?episode-id=4NBCU2330-S2T18
-https://www.9now.com.au/paramedics/season-5/episode-10
-https://www.sbs.com.au/ondemand/watch/2260044867809
-https://10play.com.au/masterchef/episodes/season-16/episode-45/tpv240705dyovw
-https://www.threenow.co.nz/shows/thirst-with-shay-mitchell/season-1-ep-1/1718148621037/M86965-766
-https://www.tvnz.co.nz/player/tvepisode/tauranga-hilltop
-```
 
 It is not necessary to play the video in the browser to obtain the page URL.
 
@@ -266,31 +255,40 @@ You can choose `Y` to download, choose `N` to skip, or copy the printed command 
 
 ### Download Modes
 
-Ozivine has three download modes:
+Ozivine has six modes:
 
 | Mode | Flags | Behaviour |
 | --- | --- | --- |
 | Auto | none | Builds the default best-quality command and asks whether to download. |
-| Info | `--info` or `-i` | Shows available streams and the suggested filename without downloading. |
+| Info | `--info` or `-i` | Shows available streams, metadata and the suggested filename without downloading. |
 | Action | `--action` or `-a` | Builds a command without automatic stream selectors so `N_m3u8DL-RE` can prompt for manual choices. |
+| List | `--list` or `-l` | Lists available episodes for supported show URLs and temporarily saves episode metadata while rendering. |
+| Export | `--export` or `-x` | With list mode, exports episode labels and URLs to a text file in `export`. |
+| Download selector | `--download` or `-d` | With supported show URLs, downloads a selected episode, season, or range by selector. |
 
 Examples:
 
 ```powershell
+python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10"
 python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10" -i
 python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10" -a
+python ozivine.py "https://iview.abc.net.au/show/fisk" -l
+python ozivine.py "https://iview.abc.net.au/show/fisk" -l -x
+python ozivine.py "https://www.tvnz.co.nz/tvseries/grand-designs-new-zealand" -d s10
+python ozivine.py "https://iview.abc.net.au/show/fisk" -d s01e03-s02e02
 ```
 
-The same flags can be entered after the URL when using the interactive prompt:
-
-```text
-Enter the video URL: https://www.9now.com.au/paramedics/season-5/episode-10 -i
-Enter the video URL: https://www.9now.com.au/paramedics/season-5/episode-10 -a
-```
+The same flags can be entered after the URL when using the interactive prompt.
 
 Info mode is useful for checking available resolutions, audio tracks, subtitles, keys, and the generated filename before starting a download.
 
 Action mode is useful when you want to choose a lower resolution, alternate audio stream, or subtitle track manually. The generated filename is still based on Ozivine's default/best-quality expectation, so manually choosing a lower stream may require renaming the file afterward.
+
+List mode is currently available for SBS, ABC iView, 7Plus, 9Now, 10, ThreeNow, and TVNZ. It accepts supported show URLs and prints a season tree with episode watch URLs.
+
+Export mode applies to all supported list-mode services. It writes a plain text file named like `tvnz_border-patrol_export_20260717_120033.txt` or `abc_fisk_export_20260717_120033.txt` into the `export` folder.
+
+Download selector mode is currently available for ABC iView, 7Plus, 9Now, 10, SBS, ThreeNow, and TVNZ. Selectors must use lowercase or uppercase season/episode formatting: `s01e01`, `s2026e01`, `s01`, or `s2026`. Episode ranges such as `s01e03-s02e02` and season ranges such as `s01-s03` are also supported. Whole-season and range selectors ask once before downloading the queued episodes. 9Now selector downloads ignore clip items and queue standard episodes only.
 
 ## TVNZ Local Storage
 
