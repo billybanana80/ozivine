@@ -86,8 +86,8 @@ proxy_providers:
     username:
     password:
     server_map:
-      AU:
-      NZ:
+      AU: https://username:password@au1113.proxy.nordvpn.com:89
+      NZ: https://username:password@nz136.proxy.nordvpn.com:89
 ```
 
 > [!TIP]
