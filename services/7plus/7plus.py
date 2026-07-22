@@ -203,6 +203,18 @@ def parse_show_slug(series_url):
     path_parts = [part for part in parts.path.split("/") if part]
     return path_parts[0] if path_parts else ""
 
+def is_7plus_episode_url(value):
+    return bool(re.search(r"[?&]episode-id=", value or "", re.IGNORECASE))
+
+def print_show_url_required(series_url, selector=None):
+    show_slug = parse_show_slug(series_url)
+    suggested_url = f"{BASE_URL}/{show_slug}" if show_slug else "the show URL without ?episode-id=..."
+    print(f"{bcolors.WARNING}{icons.ICON_WARNING} 7Plus selector modes need a show URL, not an episode URL.{bcolors.ENDC}")
+    if selector:
+        print(f"{bcolors.YELLOW}{icons.ICON_INFO} Try: {suggested_url} -d {selector}{bcolors.ENDC}")
+    else:
+        print(f"{bcolors.YELLOW}{icons.ICON_INFO} Try: {suggested_url} -l{bcolors.ENDC}")
+
 def find_episode_id_in_component(value):
     if isinstance(value, dict):
         for key in ("playerId", "catalogueNumber"):
@@ -556,6 +568,10 @@ def print_episode_list(series_title, episodes):
             )
 
 def list_show_episodes(series_url, cookies_path=None, export_list=False):
+    if is_7plus_episode_url(series_url):
+        print_show_url_required(series_url)
+        return
+
     show_slug = parse_show_slug(series_url)
     if not show_slug:
         raise ValueError("Could not determine 7Plus show slug from the URL.")
@@ -744,6 +760,10 @@ def print_download_queue(episodes):
         )
 
 def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, cookies_path):
+    if is_7plus_episode_url(series_url):
+        print_show_url_required(series_url, selector)
+        return
+
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector, cookies_path)
@@ -1203,7 +1223,9 @@ def season_episode_from_episode_id(episode_id):
     return f"S{season}E{int(episode):02d}"
 
 def season_episode_from_metadata(alt_tag, episode_id):
-    match = re.search(r'Season (\d+) Episode (\d+)', alt_tag or "")
+    match = re.search(r'Season\s+(\d+)\s+Episode\s+(\d+)', alt_tag or "", re.IGNORECASE)
+    if not match:
+        match = re.search(r'\bS\s*(\d+)\s*E\s*(\d+)\b', alt_tag or "", re.IGNORECASE)
     if match:
         season, episode = match.groups()
         return f"S{season.zfill(2)}E{episode.zfill(2)}"
@@ -1217,8 +1239,17 @@ def is_movie_metadata(show_response, episode_id):
     if featured.get("playerId") and featured.get("playerId") != episode_id:
         return False
 
-    alt_tag = ((show_response.get("pageMetaData") or {}).get("objectGraphImage") or {}).get("altTag") or ""
-    if re.search(r"Season\s+\d+\s+Episode\s+\d+", alt_tag, re.IGNORECASE):
+    page_metadata = show_response.get("pageMetaData") or {}
+    alt_tag = (page_metadata.get("objectGraphImage") or {}).get("altTag") or ""
+    episode_text = " ".join(
+        str(value or "")
+        for value in (
+            alt_tag,
+            featured.get("subtitle"),
+            featured.get("title"),
+        )
+    )
+    if re.search(r"Season\s+\d+\s+Episode\s+\d+|\bS\s*\d+\s*E\s*\d+\b", episode_text, re.IGNORECASE):
         return False
 
     return bool(featured.get("playerId") or featured.get("duration") or featured.get("productionYear"))
