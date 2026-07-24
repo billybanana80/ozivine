@@ -940,18 +940,7 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
     if user_input == 'y':
         # First attempt
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
-        quiet_primary_attempt = (
-            mode != "interactive"
-            and use_source == m3u8_file_path
-            and not preflight_failed
-        )
-        result = subprocess.run(
-            download_command,
-            shell=True,
-            capture_output=quiet_primary_attempt,
-            text=quiet_primary_attempt,
-            errors="replace" if quiet_primary_attempt else None,
-        )
+        result = subprocess.run(download_command, shell=True)
         download_ok = result.returncode == 0
         if result.returncode != 0 and not preflight_failed:
             if expected_output_exists(downloads_path, final_save_name):
