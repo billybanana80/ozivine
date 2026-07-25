@@ -10,6 +10,12 @@ from colors import bcolors
 from proxy_config import configure_proxy
 import icons
 
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 #   Ozivine: Downloader for Australian & New Zealand FTA services
 #   Author: billybanana
 #   Quality: up to 1080p, service dependent
@@ -25,7 +31,7 @@ import icons
 #   Full usage details and examples are in README.md.
 
 console = Console()
-__version__ = "4.0"  # Replace with the actual version
+__version__ = "4.1"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
@@ -161,6 +167,11 @@ def main():
         service_module = "services.10play.10play"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating 10{bcolors.ENDC}")
         args = (video_url, downloads_path, credentials.get("10play"), mode, export_list, download_selector) 
+    elif video_url.startswith("https://watch.brollie.com.au/"):
+        service_key = "brollie"
+        service_module = "services.brollie.brollie"
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating Brollie{bcolors.ENDC}")
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)
     elif video_url.startswith("https://www.tvnz.co.nz/"):
         service_key = "tvnz"
         service_module = "services.tvnz.tvnz"
@@ -171,29 +182,34 @@ def main():
             sys.exit(1)
 
         args = (video_url, downloads_path, wvd_device_path, tvnz_local_storage, mode, export_list, download_selector) 
+    elif video_url.startswith("https://www.maoriplus.co.nz"):
+        service_key = "mplus"
+        service_module = "services.mplus.mplus"
+        print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating Maori+{bcolors.ENDC}")
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)
     elif video_url.startswith("https://www.threenow.co.nz"):
         service_key = "threenow"
         service_module = "services.threenow.threenow"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating ThreeNow{bcolors.ENDC}")
         args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)                      
     else:
-        print(f"{bcolors.RED}{icons.ICON_FAILURE} Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10, SBS, ABC iView, ThreeNow or TVNZ.{bcolors.ENDC}")
+        print(f"{bcolors.RED}{icons.ICON_FAILURE} Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10, SBS, ABC iView, Brollie, Maori+, ThreeNow or TVNZ.{bcolors.ENDC}")
         sys.exit(1)
 
     try:
         if export_list and mode != "list":
             print(f"{bcolors.YELLOW}{icons.ICON_FAILURE} Export mode is only available with --list/-l.{bcolors.ENDC}")
             sys.exit(1)
-        if mode == "download" and service_key not in {"abciview", "7plus", "9now", "10play", "sbs", "threenow", "tvnz"}:
-            print(f"{bcolors.YELLOW}{icons.ICON_FAILURE} Download selector mode is currently implemented for ABC iView, 7Plus, 9Now, 10, SBS, ThreeNow, and TVNZ only.{bcolors.ENDC}")
+        if mode == "download" and service_key not in {"abciview", "7plus", "9now", "10play", "brollie", "sbs", "mplus", "threenow", "tvnz"}:
+            print(f"{bcolors.YELLOW}{icons.ICON_FAILURE} Download selector mode is currently implemented for ABC iView, 7Plus, 9Now, 10, Brollie, SBS, Maori+, ThreeNow, and TVNZ only.{bcolors.ENDC}")
             sys.exit(1)
         if mode == "download" and not download_selector:
             print(f"{bcolors.YELLOW}{icons.ICON_FAILURE} Download mode requires a selector such as s01e01, s2026e01, s01, s2026, s01e01-s02e02, or s01-s03.{bcolors.ENDC}")
             sys.exit(1)
-        if mode == "list" and service_key not in {"sbs", "abciview", "7plus", "9now", "10play", "threenow", "tvnz"}:
-            print(f"{bcolors.YELLOW}{icons.ICON_FAILURE} List mode is currently implemented for SBS, ABC iView, 7Plus, 9Now, 10, ThreeNow, and TVNZ only.{bcolors.ENDC}")
+        if mode == "list" and service_key not in {"sbs", "abciview", "7plus", "9now", "10play", "brollie", "mplus", "threenow", "tvnz"}:
+            print(f"{bcolors.YELLOW}{icons.ICON_FAILURE} List mode is currently implemented for SBS, ABC iView, 7Plus, 9Now, 10, Brollie, Maori+, ThreeNow, and TVNZ only.{bcolors.ENDC}")
             sys.exit(1)
-        if mode != "auto" and service_key not in {"9now", "7plus", "sbs", "abciview", "10play", "tvnz", "threenow"}:
+        if mode != "auto" and service_key not in {"9now", "7plus", "sbs", "abciview", "10play", "brollie", "mplus", "tvnz", "threenow"}:
             print(f"{bcolors.YELLOW}{icons.ICON_FAILURE} {mode} mode is not implemented for this service yet; using default service behavior.{bcolors.ENDC}")
         configure_proxy(config, service_key)
         service = importlib.import_module(service_module)
