@@ -10,9 +10,11 @@ REGION_BY_SERVICE = {
     "7plus": "AU",
     "9now": "AU",
     "10play": "AU",
+    "brollie": "AU",
     "sbs": "AU",
     "tvnz": "NZ",
     "threenow": "NZ",
+    "mplus": "NZ",
 }
 
 DEFAULT_PROVIDER_ORDER = ("surfsharkvpn", "nordvpn")
@@ -21,9 +23,11 @@ DEFAULT_SERVICE_PROXY_ENABLED = {
     "7plus": True,
     "9now": True,
     "10play": True,
+    "brollie": True,
     "sbs": True,
     "threenow": True,
     "tvnz": True,
+    "mplus": True,
 }
 PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "OZIVINE_PROXY_URL")
 

@@ -10,6 +10,7 @@ class bcolors:
     RED = "\033[91m"
     FAIL = RED
     ORANGE = "\033[38;5;208m"
+    GRAY = "\033[37m"
     BOLD = "\033[1m"
     UNDERLINE = "\033[4m"
     ENDC = "\033[0m"

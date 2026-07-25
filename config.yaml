@@ -15,10 +15,12 @@ proxy:
   - nordvpn
   services:
     abciview: false
+    brollie: false
     7plus: false
     9now: false
     10play: true
     sbs: false
+    mplus: true
     threenow: false
     tvnz: false
 proxy_providers:
@@ -31,6 +33,6 @@ proxy_providers:
   nordvpn:
     password: # Replace with your own Nord OpenVPN credentials
     server_map:
-      NZ: # Replace with Nord server details
-      AU: # Replace with Nord server details
+      NZ: https://username:password@nz136.proxy.nordvpn.com:89 # Leave as is
+      AU: https://username:password@au1113.proxy.nordvpn.com:89 # Leave as is
     username: # Replace with your own Nord OpenVPN credentials
