@@ -18,8 +18,8 @@
 - [x] Login credential support where required
 - [x] Optional proxy support for Australian and New Zealand services
 - [x] Info and action modes for previewing or manually selecting available streams
-- [x] SBS, ABC iView, 7Plus, 9Now, 10, ThreeNow, and TVNZ list mode for viewing available show episodes before choosing a download
-- [x] Supported sites: ABC iView, 7Plus, 9Now, 10, SBS On Demand, ThreeNow, and TVNZ
+- [x] SBS, ABC iView, 7Plus, 9Now, 10, Brollie, Maori+, ThreeNow, and TVNZ list mode for viewing available show episodes before choosing a download
+- [x] Supported sites: ABC iView, 7Plus, 9Now, 10, Brollie, SBS On Demand, Maori+, ThreeNow, and TVNZ
 
 ## Requirements
 
@@ -71,7 +71,9 @@ proxy:
     7plus: true
     9now: true
     10play: true
+    brollie: true
     sbs: true
+    mplus: true
     threenow: true
     tvnz: true
 
@@ -105,8 +107,8 @@ Proxy routing is selected automatically from the input video URL:
 
 | Region | Services |
 | --- | --- |
-| AU | ABC iView, 7Plus, 9Now, 10, SBS On Demand |
-| NZ | ThreeNow, TVNZ |
+| AU | ABC iView, 7Plus, 9Now, 10, Brollie, SBS On Demand |
+| NZ | Maori+, ThreeNow, TVNZ |
 
 Set proxy support in `config.yaml`:
 
@@ -121,7 +123,9 @@ proxy:
     7plus: true
     9now: true
     10play: true
+    brollie: true
     sbs: true
+    mplus: true
     threenow: true
     tvnz: true
 ```
@@ -146,7 +150,9 @@ proxy:
     7plus: false
     9now: false
     10play: false
+    brollie: false
     sbs: false
+    mplus: true
     threenow: true
     tvnz: true
 ```
@@ -206,11 +212,10 @@ cookies_path: "C:/Downloads/Ozivine/cookies/cookies.txt"
 
 Service notes:
 
-- ABC iView and 9Now can be used without an account.
+- ABC iView, 9Now, Brollie, ThreeNow and Maori+ can be used without an account.
 - 7Plus requires cookies from a logged-in free account.
 - 10 and SBS require login/account data.
 - TVNZ requires local storage token.
-- ThreeNow requires a login to navigate the site.
 
 ## Usage
 
@@ -236,7 +241,9 @@ Supported service home pages:
 | 7Plus | https://7plus.com.au |
 | 9Now | https://www.9now.com.au |
 | 10 | https://10.com.au |
+| Brollie | https://watch.brollie.com.au |
 | SBS On Demand | https://www.sbs.com.au/ondemand |
+| Maori+ | https://www.maoriplus.co.nz |
 | ThreeNow | https://www.threenow.co.nz |
 | TVNZ | https://www.tvnz.co.nz |
 
@@ -272,6 +279,7 @@ Examples:
 python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10"
 python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10" -i
 python ozivine.py "https://www.9now.com.au/paramedics/season-5/episode-10" -a
+python ozivine.py "https://watch.brollie.com.au/apps/845/tv-shows/tv-shows/skippy/season-1/cage-of-koalas" -i
 python ozivine.py "https://iview.abc.net.au/show/fisk" -l
 python ozivine.py "https://iview.abc.net.au/show/fisk" -l -x
 python ozivine.py "https://www.tvnz.co.nz/tvseries/grand-designs-new-zealand" -d s10
@@ -284,11 +292,11 @@ Info mode is useful for checking available resolutions, audio tracks, subtitles,
 
 Action mode is useful when you want to choose a lower resolution, alternate audio stream, or subtitle track manually. The generated filename is still based on Ozivine's default/best-quality expectation, so manually choosing a lower stream may require renaming the file afterward.
 
-List mode is currently available for SBS, ABC iView, 7Plus, 9Now, 10, ThreeNow, and TVNZ. It accepts supported show URLs and prints a season tree with episode watch URLs.
+List mode is currently available for SBS, ABC iView, 7Plus, 9Now, 10, Brollie, Maori+, ThreeNow, and TVNZ. It accepts supported show URLs and prints a season tree with episode watch URLs.
 
-Export mode applies to all supported list-mode services. It writes a plain text file named like `tvnz_border-patrol_export_20260717_120033.txt` or `abc_fisk_export_20260717_120033.txt` into the `export` folder.
+Export mode applies to all supported list-mode services. It writes a plain text file named like `tvnz_border-patrol_export_20260717_120033.txt`, `brollie_skippy_export_20260717_120033.txt`, `mplus_ahikaroa_export_20260717_120033.txt`, or `abc_fisk_export_20260717_120033.txt` into the `export` folder.
 
-Download selector mode is currently available for ABC iView, 7Plus, 9Now, 10, SBS, ThreeNow, and TVNZ. Selectors must use lowercase or uppercase season/episode formatting: `s01e01`, `s2026e01`, `s01`, or `s2026`. Episode ranges such as `s01e03-s02e02` and season ranges such as `s01-s03` are also supported. Whole-season and range selectors ask once before downloading the queued episodes. 9Now selector downloads ignore clip items and queue standard episodes only.
+Download selector mode is currently available for ABC iView, 7Plus, 9Now, 10, Brollie, SBS, Maori+, ThreeNow, and TVNZ. Selectors must use lowercase or uppercase season/episode formatting: `s01e01`, `s2026e01`, `s01`, or `s2026`. Episode ranges such as `s01e03-s02e02` and season ranges such as `s01-s03` are also supported. Whole-season and range selectors ask once before downloading the queued episodes. 9Now selector downloads ignore clip items and queue standard episodes only.
 
 ## TVNZ Local Storage
 
