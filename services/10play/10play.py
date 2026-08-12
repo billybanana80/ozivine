@@ -17,6 +17,7 @@ from rich.text import Text
 from colors import bcolors
 import icons
 from filename_utils import safe_windows_filename
+from quality_utils import apply_quality_to_filename, normalize_quality, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 
@@ -864,8 +865,8 @@ def display_info(m3u8_file_path, formatted_file_name, master_m3u8_url, original_
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
     cleanup_temp_m3u8(m3u8_file_path)
 
-def build_download_command(source, downloads_path, save_name, mode="auto"):
-    selectors = "" if mode == "interactive" else "--select-video best --select-audio best --select-subtitle all "
+def build_download_command(source, downloads_path, save_name, mode="auto", quality=None):
+    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best --select-subtitle all "
     download_command = (
         f'N_m3u8DL-RE "{source}" '
         f'--ad-keyword redirector.googlevideo.com '
@@ -881,9 +882,10 @@ def display_master_info(master_m3u8_url, formatted_file_name, subtitles=None, me
     print_info_metadata(metadata or {})
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
 
-def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False):
+def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False, quality=None):
     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{master_m3u8_url}")
-    download_command = build_download_command(master_m3u8_url, downloads_path, formatted_file_name, mode)
+    formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
+    download_command = build_download_command(master_m3u8_url, downloads_path, formatted_file_name, mode, quality)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
     print_external_subtitles(subtitles or [])
@@ -898,9 +900,9 @@ def display_master_download_command(master_m3u8_url, formatted_file_name, downlo
     else:
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
-def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto", subtitles=None, auto_download=False):
+def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto", subtitles=None, auto_download=False, quality=None):
     use_source = m3u8_file_path   # default to local file
-    final_save_name = formatted_file_name
+    final_save_name = apply_quality_to_filename(formatted_file_name, quality)
     action_master_path = None
 
     print(f"{bcolors.LIGHTBLUE}FHD M3U8 File: {bcolors.ENDC}{m3u8_file_path}")
@@ -920,7 +922,7 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
         best_url, best_h = pick_best_variant(master_m3u8_url)
         if best_url:
             use_source = best_url
-            if best_h:
+            if best_h and not quality:
                 final_save_name = replace_resolution_tag(formatted_file_name, best_h)
             print(f"{bcolors.OKGREEN}Selected stream:{bcolors.ENDC} {best_h or 'unknown'}p")
             print(f"{bcolors.OKBLUE}Selected M3U8 URL:{bcolors.ENDC} {best_url}")
@@ -928,8 +930,8 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
             print(f"{bcolors.FAIL}Could not pick an alternate stream from the master playlist.{bcolors.ENDC}")
 
     # Build command
-    selectors = "" if mode == "interactive" else "--select-video best --select-audio best --select-subtitle all "
-    download_command = build_download_command(use_source, downloads_path, final_save_name, mode)
+    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+    download_command = build_download_command(use_source, downloads_path, final_save_name, mode, quality)
     download_command = append_downloader_proxy(download_command)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
@@ -954,7 +956,7 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
             print(f"{bcolors.YELLOW}{icons.ICON_INFO} Preferred 1080p stream is not available; trying next best stream instead.{bcolors.ENDC}")
             best_url, best_h = pick_best_variant(master_m3u8_url)
             if best_url:
-                fallback_save = replace_resolution_tag(formatted_file_name, best_h or 720)
+                fallback_save = final_save_name if quality else replace_resolution_tag(formatted_file_name, best_h or 720)
                 fb_cmd = (
                     f'N_m3u8DL-RE "{best_url}" '
                     f'--ad-keyword redirector.googlevideo.com '
@@ -1476,7 +1478,7 @@ def print_download_queue(episodes):
             )
         )
 
-def download_selected_episodes(series_url, selector, downloads_path, credentials):
+def download_selected_episodes(series_url, selector, downloads_path, credentials, quality=None):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector)
@@ -1492,16 +1494,16 @@ def download_selected_episodes(series_url, selector, downloads_path, credentials
 
     for index, episode in enumerate(episodes, start=1):
         print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {episode.get('Title') or episode.get('Video URL')}{bcolors.ENDC}")
-        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True)
+        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
 
 # Main logic
-def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False):
+def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
     if mode == "list":
         list_show_episodes(video_url, export_list)
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, credentials)
+        download_selected_episodes(video_url, download_selector, downloads_path, credentials, quality)
         return
 
     config = load_config()
@@ -1539,7 +1541,12 @@ def main(video_url, downloads_path, credentials, mode="auto", export_list=False,
                 if mode == "info":
                     display_master_info(manifest_url, formatted_file_name, subtitles, video_data)
                 else:
-                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download)
+                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, quality)
+                return
+
+            requested_quality = normalize_quality(quality)
+            if requested_quality and requested_quality != "1080" and mode != "info":
+                display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, quality)
                 return
 
             variant_url = download_and_select_variant(manifest_url)

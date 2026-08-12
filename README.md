@@ -262,7 +262,7 @@ You can choose `Y` to download, choose `N` to skip, or copy the printed command 
 
 ### Download Modes
 
-Ozivine has six modes:
+Ozivine has these modes and download options:
 
 | Mode | Flags | Behaviour |
 | --- | --- | --- |
@@ -272,6 +272,7 @@ Ozivine has six modes:
 | List | `--list` or `-l` | Lists available episodes for supported show URLs and temporarily saves episode metadata while rendering. |
 | Export | `--export` or `-x` | With list mode, exports episode labels and URLs to a text file in `export`. |
 | Download selector | `--download` or `-d` | With supported show URLs, downloads a selected episode, season, or range by selector. |
+| Quality | `--quality` or `-q` | With auto or download selector mode, selects a video height such as `720` and uses that height in the generated filename. |
 
 Examples:
 
@@ -284,6 +285,8 @@ python ozivine.py "https://iview.abc.net.au/show/fisk" -l
 python ozivine.py "https://iview.abc.net.au/show/fisk" -l -x
 python ozivine.py "https://www.tvnz.co.nz/tvseries/grand-designs-new-zealand" -d s10
 python ozivine.py "https://iview.abc.net.au/show/fisk" -d s01e03-s02e02
+python ozivine.py "https://www.tvnz.co.nz/tvepisode/border-patrol-s15-e11-border-patrol" -q 720
+python ozivine.py "https://www.tvnz.co.nz/tvseries/border-patrol" -d s15e01-s15e12 -q 720
 ```
 
 The same flags can be entered after the URL when using the interactive prompt.
@@ -291,6 +294,8 @@ The same flags can be entered after the URL when using the interactive prompt.
 Info mode is useful for checking available resolutions, audio tracks, subtitles, keys, and the generated filename before starting a download.
 
 Action mode is useful when you want to choose a lower resolution, alternate audio stream, or subtitle track manually. The generated filename is still based on Ozivine's default/best-quality expectation, so manually choosing a lower stream may require renaming the file afterward.
+
+Quality mode is useful when you want Ozivine to build the download command with a specific video height, for example `--select-video res=720` instead of `--select-video best`. It is recommended to check available streams with `-i` first, because requesting a height that does not exist, such as `-q 540`, can leave N_m3u8DL-RE with no matching video stream selected. Info mode still shows the filename derived from the service metadata and available streams.
 
 List mode is currently available for SBS, ABC iView, 7Plus, 9Now, 10, Brollie, Maori+, ThreeNow, and TVNZ. It accepts supported show URLs and prints a season tree with episode watch URLs.
 

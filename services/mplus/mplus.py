@@ -27,6 +27,7 @@ from rich.text import Text
 from colors import bcolors
 import icons
 from filename_utils import safe_windows_filename
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 
@@ -1094,8 +1095,8 @@ def format_filename(metadata, resolution):
     return ".".join(part for part in parts if part and part != "Unknown")
 
 
-def build_download_command(playback, filename, keys=None, mode="auto"):
-    selectors = "" if mode == "interactive" else "--select-video best --select-audio best --select-subtitle all "
+def build_download_command(playback, filename, keys=None, mode="auto", quality=None):
+    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best --select-subtitle all "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -1158,7 +1159,7 @@ def maybe_download(command, auto_download=False):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url, mode="auto", auto_download=False, info=False):
+def process_video(video_url, mode="auto", auto_download=False, info=False, quality=None):
     if not info:
         print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
     metadata = search_metadata(video_url)
@@ -1196,7 +1197,8 @@ def process_video(video_url, mode="auto", auto_download=False, info=False):
         print_mplus_info(playback, filename, keys)
         return
 
-    command = build_download_command(playback, filename, keys, mode=mode)
+    filename = apply_quality_to_filename(filename, quality)
+    command = build_download_command(playback, filename, keys, mode=mode, quality=quality)
     print_playback_details(playback, keys, command)
 
     maybe_download(command, auto_download=auto_download)
@@ -1208,7 +1210,7 @@ def info(video_url):
     process_video(video_url, info=True)
 
 
-def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path):
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, quality=None):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
@@ -1221,7 +1223,7 @@ def download_selected_episodes(series_url, selector, downloads_path, wvd_device_
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        main(item.url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=True)
+        main(item.url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
 
 
 def parse_args(argv=None):
@@ -1236,6 +1238,7 @@ def parse_args(argv=None):
     mode_group.add_argument("-l", "--list", action="store_true", help="List episodes found on a series URL")
     mode_group.add_argument("-d", "--download", metavar="SELECTOR", help="Download from a series URL using sXXeXX, sXX, or a range")
     parser.add_argument("-x", "--export", action="store_true", help="Export list-mode episode URLs to a text file")
+    parser.add_argument("-q", "--quality", help="Select video height for downloads, e.g. 720 or 1080")
     return parser.parse_args(argv)
 
 
@@ -1262,14 +1265,14 @@ def standalone_main():
         elif args.download:
             mode = "download"
 
-        main(video_url, os.getcwd(), None, mode=mode, export_list=args.export, download_selector=args.download)
+        main(video_url, os.getcwd(), None, mode=mode, export_list=args.export, download_selector=args.download, quality=args.quality)
         return 0
     except Exception as exc:
         print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Error: {exc}{bcolors.ENDC}")
         return 1
 
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=False):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
     global DOWNLOAD_DIR, WVD_DEVICE_PATH
     DOWNLOAD_DIR = downloads_path
     WVD_DEVICE_PATH = wvd_device_path
@@ -1285,7 +1288,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
         if is_episode_url(video_url):
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a Maori+ series URL, not an episode/movie URL.{bcolors.ENDC}")
             return
-        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path)
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, quality)
         return
 
     if mode == "info":
@@ -1293,7 +1296,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
         return
 
     if is_episode_url(video_url):
-        process_video(video_url, mode=mode, auto_download=auto_download)
+        process_video(video_url, mode=mode, auto_download=auto_download, quality=quality)
         return
 
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")

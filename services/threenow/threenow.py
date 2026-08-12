@@ -16,6 +16,7 @@ from rich.text import Text
 from colors import bcolors
 import icons
 from filename_utils import safe_windows_filename
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 
@@ -368,8 +369,8 @@ def get_m3u8_streams(m3u8_url):
 
     return sorted(streams, key=stream_sort_key)
 
-def build_download_command(manifest_url, downloads_path, formatted_filename, keys=None, mode="auto"):
-    selectors = "" if mode == "interactive" else "--select-video best --select-audio best --select-subtitle all "
+def build_download_command(manifest_url, downloads_path, formatted_filename, keys=None, mode="auto", quality=None):
+    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best --select-subtitle all "
     download_command = (
         f'N_m3u8DL-RE "{manifest_url}" '
         f'{selectors}'
@@ -457,7 +458,7 @@ def print_info_metadata(video_info):
         print(f"{bcolors.LIGHTBLUE}{label}: {bcolors.ENDC}{value}")
 
 # Print all the required information and download command
-def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto", auto_download=False):
+def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto", auto_download=False, quality=None):
     try:
         video_info = get_video_info(video_url)
         show_id = video_info['showId']
@@ -477,7 +478,8 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
                 print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_filename}.mkv")
                 return
 
-            download_command = build_download_command(manifest_url, downloads_path, formatted_filename, mode=mode)
+            formatted_filename = apply_quality_to_filename(formatted_filename, quality)
+            download_command = build_download_command(manifest_url, downloads_path, formatted_filename, mode=mode, quality=quality)
             print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
             print(mask_proxy_command(download_command))
 
@@ -510,7 +512,8 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
                     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_filename}.mkv")
                     return
                 
-                download_command = build_download_command(manifest_url, downloads_path, formatted_filename, keys, mode)
+                formatted_filename = apply_quality_to_filename(formatted_filename, quality)
+                download_command = build_download_command(manifest_url, downloads_path, formatted_filename, keys, mode, quality)
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(mask_proxy_command(download_command))
 
@@ -537,7 +540,8 @@ def get_download_command(video_url, downloads_path, wvd_device_path, mode="auto"
                     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_filename}.mkv")
                     return
 
-                download_command = build_download_command(manifest_url, downloads_path, formatted_filename, mode=mode)
+                formatted_filename = apply_quality_to_filename(formatted_filename, quality)
+                download_command = build_download_command(manifest_url, downloads_path, formatted_filename, mode=mode, quality=quality)
                 print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
                 print(mask_proxy_command(download_command))
 
@@ -860,7 +864,7 @@ def print_download_queue(episodes):
             )
         )
 
-def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path):
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, quality=None):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector)
@@ -876,16 +880,15 @@ def download_selected_episodes(series_url, selector, downloads_path, wvd_device_
 
     for index, episode in enumerate(episodes, start=1):
         print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {episode.get('Title') or episode.get('Video URL')}{bcolors.ENDC}")
-        main(episode["Video URL"], downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=True)
+        main(episode["Video URL"], downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=False):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
     if mode == "list":
         list_show_episodes(video_url, export_list)
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path)
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, quality)
         return
 
-    get_download_command(video_url, downloads_path, wvd_device_path, mode, auto_download)
-
+    get_download_command(video_url, downloads_path, wvd_device_path, mode, auto_download, quality)

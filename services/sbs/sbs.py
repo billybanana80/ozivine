@@ -14,6 +14,7 @@ from rich.text import Text
 from colors import bcolors
 import icons
 from filename_utils import safe_windows_filename
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 
@@ -583,7 +584,7 @@ def print_download_queue(episodes):
             )
         )
 
-def download_selected_episodes(series_url, selector, downloads_path, credentials):
+def download_selected_episodes(series_url, selector, downloads_path, credentials, quality=None):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector)
@@ -599,7 +600,7 @@ def download_selected_episodes(series_url, selector, downloads_path, credentials
 
     for index, episode in enumerate(episodes, start=1):
         print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {clean_queue_title(episode)}{bcolors.ENDC}")
-        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True)
+        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
 
 # Function to get show information from playback catalogue
 def get_playback_data(video_id, access_token):
@@ -986,8 +987,8 @@ def extract_info(video_url, access_token):
     return manifest_url, formatted_file_name, subtitles, playback_data
 
 # Function to format and display download command
-def build_download_command(manifest_url, formatted_file_name, downloads_path, interactive=False):
-    selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle all "
+def build_download_command(manifest_url, formatted_file_name, downloads_path, interactive=False, quality=None):
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
     download_command = (
         f'N_m3u8DL-RE "{manifest_url}" '
         f'{selectors}'
@@ -1003,16 +1004,18 @@ def display_info(manifest_url, formatted_file_name, subtitles=None, metadata=Non
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
 
 # Function to format and display download command
-def display_download_command(manifest_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False, metadata=None):
+def display_download_command(manifest_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False, metadata=None, quality=None):
     if mode == "info":
         display_info(manifest_url, formatted_file_name, subtitles, metadata)
         return
 
+    formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
     download_command = build_download_command(
         manifest_url,
         formatted_file_name,
         downloads_path,
         interactive=(mode == "interactive"),
+        quality=quality,
     )
 
     print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
@@ -1031,13 +1034,13 @@ def display_download_command(manifest_url, formatted_file_name, downloads_path, 
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
 # Main function
-def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False):
+def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
     if mode == "list":
         list_show_episodes(video_url, export_list)
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, credentials)
+        download_selected_episodes(video_url, download_selector, downloads_path, credentials, quality)
         return
 
     config = load_config()
@@ -1047,4 +1050,4 @@ def main(video_url, downloads_path, credentials, mode="auto", export_list=False,
     if not manifest_url:
         return
 
-    display_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, metadata)
+    display_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, metadata, quality)

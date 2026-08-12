@@ -8,6 +8,7 @@ from rich.text import Text
 from datetime import datetime
 from colors import bcolors
 from proxy_config import configure_proxy
+from quality_utils import normalize_quality
 import icons
 
 for stream in (sys.stdout, sys.stderr):
@@ -31,7 +32,7 @@ for stream in (sys.stdout, sys.stderr):
 #   Full usage details and examples are in README.md.
 
 console = Console()
-__version__ = "4.1"  # Replace with the actual version
+__version__ = "4.2"  # Replace with the actual version
 
 def print_ascii_art(version=None):
     ascii_art = Text(
@@ -68,12 +69,13 @@ def parse_args():
     mode_group.add_argument("--list", "-l", action="store_true", help="List available episodes for a show URL")
     mode_group.add_argument("--download", "-d", metavar="SELECTOR", help="Download from a show URL using sXXeXX, sXXXXeXX, sXX, or sXXXX")
     parser.add_argument("--export", "-x", action="store_true", help="Export list-mode episode URLs to a text file")
+    parser.add_argument("--quality", "-q", type=normalize_quality, help="Select video height for downloads, e.g. 720 or 1080")
     return parser.parse_args()
 
-def parse_prompt_input(value, mode, export_list=False, download_selector=None):
+def parse_prompt_input(value, mode, export_list=False, download_selector=None, quality=None):
     parts = value.strip().split()
     if not parts:
-        return "", mode, export_list, download_selector
+        return "", mode, export_list, download_selector, quality
 
     detected_modes = []
     url_parts = []
@@ -92,6 +94,11 @@ def parse_prompt_input(value, mode, export_list=False, download_selector=None):
                 raise ValueError("Download mode requires a selector such as s01e01, s01, or s01e01-s02e02.")
             index += 1
             download_selector = parts[index]
+        elif part in {"--quality", "-q"}:
+            if index + 1 >= len(parts):
+                raise ValueError("Quality requires a height such as 720 or 1080.")
+            index += 1
+            quality = normalize_quality(parts[index])
         elif part in {"--export", "-x"}:
             export_list = True
         else:
@@ -104,7 +111,7 @@ def parse_prompt_input(value, mode, export_list=False, download_selector=None):
     if detected_modes:
         mode = detected_modes[-1]
 
-    return " ".join(url_parts).strip(), mode, export_list, download_selector
+    return " ".join(url_parts).strip(), mode, export_list, download_selector, quality
 
 def input_label_for_mode(mode):
     return "Series URL" if mode in {"list", "download"} else "Episode URL"
@@ -123,6 +130,7 @@ def main():
         mode = "download"
     export_list = parsed_args.export
     download_selector = parsed_args.download
+    quality = parsed_args.quality
 
     config = load_config()
     downloads_path = config.get('downloads_path')
@@ -138,7 +146,7 @@ def main():
     else:
         # Prompt user for manual input if no command-line argument is given
         prompt_value = input(f"{bcolors.LIGHTBLUE}Enter URL with optional flags: {bcolors.ENDC}").strip()
-        video_url, mode, export_list, download_selector = parse_prompt_input(prompt_value, mode, export_list, download_selector)
+        video_url, mode, export_list, download_selector, quality = parse_prompt_input(prompt_value, mode, export_list, download_selector, quality)
 
     print(f"{bcolors.LIGHTBLUE}{input_label_for_mode(mode)}: {bcolors.ENDC}{video_url}")
 
@@ -146,32 +154,32 @@ def main():
         service_key = "9now"
         service_module = "services.9now.9now"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating 9Now{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, False, quality)
     elif video_url.startswith("https://7plus.com.au"):
         service_key = "7plus"
         service_module = "services.7plus.7plus"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating 7Plus{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, cookies_path, mode, export_list, download_selector)
+        args = (video_url, downloads_path, wvd_device_path, cookies_path, mode, export_list, download_selector, False, quality)
     elif video_url.startswith("https://www.sbs.com.au"):
         service_key = "sbs"
         service_module = "services.sbs.sbs"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating SBS{bcolors.ENDC}")
-        args = (video_url, downloads_path, credentials.get("sbs"), mode, export_list, download_selector)
+        args = (video_url, downloads_path, credentials.get("sbs"), mode, export_list, download_selector, False, quality)
     elif video_url.startswith("https://iview.abc.net.au"):
         service_key = "abciview"
         service_module = "services.abciview.abc"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating ABC iView{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, False, quality)
     elif video_url.startswith(("https://10play.com.au/", "https://10.com.au/")):
         service_key = "10play"
         service_module = "services.10play.10play"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating 10{bcolors.ENDC}")
-        args = (video_url, downloads_path, credentials.get("10play"), mode, export_list, download_selector) 
+        args = (video_url, downloads_path, credentials.get("10play"), mode, export_list, download_selector, False, quality) 
     elif video_url.startswith("https://watch.brollie.com.au/"):
         service_key = "brollie"
         service_module = "services.brollie.brollie"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating Brollie{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, False, quality)
     elif video_url.startswith("https://www.tvnz.co.nz/"):
         service_key = "tvnz"
         service_module = "services.tvnz.tvnz"
@@ -181,17 +189,17 @@ def main():
             print(f"{bcolors.RED}{icons.ICON_FAILURE} Missing config value: tvnz.local_storage{bcolors.ENDC}")
             sys.exit(1)
 
-        args = (video_url, downloads_path, wvd_device_path, tvnz_local_storage, mode, export_list, download_selector) 
+        args = (video_url, downloads_path, wvd_device_path, tvnz_local_storage, mode, export_list, download_selector, False, quality) 
     elif video_url.startswith("https://www.maoriplus.co.nz"):
         service_key = "mplus"
         service_module = "services.mplus.mplus"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating Maori+{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, False, quality)
     elif video_url.startswith("https://www.threenow.co.nz"):
         service_key = "threenow"
         service_module = "services.threenow.threenow"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Ozivine..........initiating ThreeNow{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)                      
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, False, quality)                      
     else:
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Unsupported URL. Please enter a valid video URL from 9Now, 7Plus, 10, SBS, ABC iView, Brollie, Maori+, ThreeNow or TVNZ.{bcolors.ENDC}")
         sys.exit(1)

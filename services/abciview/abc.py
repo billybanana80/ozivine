@@ -16,6 +16,7 @@ from rich.text import Text
 from colors import bcolors
 import icons
 from filename_utils import safe_windows_filename
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
 
@@ -398,7 +399,7 @@ def print_download_queue(episodes):
             )
         )
 
-def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path):
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, quality=None):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector)
@@ -414,7 +415,7 @@ def download_selected_episodes(series_url, selector, downloads_path, wvd_device_
 
     for index, episode in enumerate(episodes, start=1):
         print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {episode.get('Title') or episode.get('Video URL')}{bcolors.ENDC}")
-        main(episode["Video URL"], downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=True)
+        main(episode["Video URL"], downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
 
 def get_jwt_token(client_id, jwt_url):
     headers = {
@@ -824,8 +825,8 @@ def format_keys(keys):
         formatted_keys.append(f"{key.kid.hex}:{key.key.hex()}")
     return formatted_keys
 
-def build_download_command(mpd_url, downloads_path, formatted_file_name, formatted_keys, mode):
-    selectors = "" if mode == "interactive" else '--select-video res=1080 --select-audio all -da role="alternate" --select-subtitle all '
+def build_download_command(mpd_url, downloads_path, formatted_file_name, formatted_keys, mode, quality=None):
+    selectors = "" if mode == "interactive" else f'{video_selector(quality, default="res=1080")} --select-audio all -da role="alternate" --select-subtitle all '
     keys = " --key " + " --key ".join(formatted_keys)
     download_command = (
         f'N_m3u8DL-RE "{mpd_url}" '
@@ -836,13 +837,13 @@ def build_download_command(mpd_url, downloads_path, formatted_file_name, formatt
     return append_downloader_proxy(download_command)
 
 # Main execution flow
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=False):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
     if mode == "list":
         list_show_episodes(video_url, export_list)
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path)
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, quality)
         return
 
     client_id = "1d4b5cba-42d2-403e-80e7-34565cdf772d"
@@ -878,7 +879,8 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
                         return
 
                     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
-                    download_command = build_download_command(mpd_url, downloads_path, formatted_file_name, formatted_keys, mode)
+                    formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
+                    download_command = build_download_command(mpd_url, downloads_path, formatted_file_name, formatted_keys, mode, quality)
                     print(mask_proxy_command(download_command))
                     print_external_subtitles(subtitles)
                     

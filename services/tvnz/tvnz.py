@@ -20,6 +20,7 @@ from rich.text import Text
 from colors import bcolors
 import icons
 from filename_utils import safe_windows_filename
+from quality_utils import apply_quality_to_filename, video_selector
 
 from services.proxy import append_downloader_proxy, mask_proxy_command
 from pywidevine.cdm import Cdm
@@ -735,8 +736,8 @@ def print_info_metadata(video):
     for label, value in rows:
         print(f"{bcolors.LIGHTBLUE}{label}: {bcolors.ENDC}{value}")
 
-def build_download_command(mpd_url, formatted_file_name, keys, mode="auto"):
-    selectors = "" if mode == "interactive" else '--select-video best --select-audio best -da role="Description" --select-subtitle all '
+def build_download_command(mpd_url, formatted_file_name, keys, mode="auto", quality=None):
+    selectors = "" if mode == "interactive" else f'{video_selector(quality)} --select-audio best -da role="Description" --select-subtitle all '
     download_command = (
         f'N_m3u8DL-RE "{mpd_url}" '
         f'{selectors}'
@@ -750,7 +751,7 @@ def build_download_command(mpd_url, formatted_file_name, keys, mode="auto"):
 
     return append_downloader_proxy(download_command)
 
-def get_download_command(video_url, mode="auto", auto_download=False):
+def get_download_command(video_url, mode="auto", auto_download=False, quality=None):
     api = TVNZAPI()
     api.authenticate()
 
@@ -779,7 +780,8 @@ def get_download_command(video_url, mode="auto", auto_download=False):
         print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
         return
 
-    download_command = build_download_command(mpd_url, formatted_file_name, keys, mode)
+    formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
+    download_command = build_download_command(mpd_url, formatted_file_name, keys, mode, quality)
 
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
@@ -1159,7 +1161,7 @@ def print_download_queue(episodes):
     for episode in episodes:
         print(f"{format_queue_label(episode)}")
 
-def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, local_storage_path):
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, local_storage_path, quality=None):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector)
@@ -1184,9 +1186,10 @@ def download_selected_episodes(series_url, selector, downloads_path, wvd_device_
             export_list=False,
             download_selector=None,
             auto_download=True,
+            quality=quality,
         )
 
-def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="auto", export_list=False, download_selector=None, auto_download=False):
+def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
     global DOWNLOAD_DIR, WVD_DEVICE_PATH, LOCAL_STORAGE_PATH
     
     DOWNLOAD_DIR = downloads_path
@@ -1198,7 +1201,7 @@ def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="a
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, local_storage_path)
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, local_storage_path, quality)
         return
 
     if looks_like_tvnz_series_url(video_url):
@@ -1206,5 +1209,5 @@ def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="a
         print(f"{bcolors.YELLOW}{icons.ICON_INFO} Use -l to list episodes or -d with a selector to download from a series.{bcolors.ENDC}")
         return
 
-    get_download_command(video_url, mode, auto_download)
+    get_download_command(video_url, mode, auto_download, quality)
 
