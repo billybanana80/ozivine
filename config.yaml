@@ -1,13 +1,13 @@
 downloads_path: "C:/YourPath/" # Example paths
 wvd_device_path: "C:/YourPath/wvd/your_device_name.wvd"
 cookies_path: "C:/YourPath/Ozivine/cookies/cookies.txt"
-
+update_checks: true
+download:
+  auto_confirm: false
 credentials:
   10play: username:password # Replace with your own credentials  
   sbs: username:password
-
-tvnz: # Replace with path to your own local_storage file
-  local_storage: "C:/YourPath/local_storage.json"  
+  tvnz: user@eaxmple.com:none # only email is required for OTP
 proxy:
   enabled: false
   provider_order:

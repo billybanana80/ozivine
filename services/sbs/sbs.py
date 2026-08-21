@@ -13,6 +13,7 @@ from rich.rule import Rule
 from rich.text import Text
 from colors import bcolors
 import icons
+from download_confirm import confirm_download
 from filename_utils import safe_windows_filename
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
@@ -584,7 +585,7 @@ def print_download_queue(episodes):
             )
         )
 
-def download_selected_episodes(series_url, selector, downloads_path, credentials, quality=None):
+def download_selected_episodes(series_url, selector, downloads_path, credentials, quality=None, auto_confirm=False, save_subs=False):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector)
@@ -593,14 +594,13 @@ def download_selected_episodes(series_url, selector, downloads_path, credentials
         return
     print_download_queue(episodes)
 
-    user_input = input(f"\nDownload {len(episodes)} episode(s)? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"\nDownload {len(episodes)} episode(s)? Y or N: ", auto_confirm=auto_confirm):
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
         return
 
     for index, episode in enumerate(episodes, start=1):
         print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {clean_queue_title(episode)}{bcolors.ENDC}")
-        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
+        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality, auto_confirm=auto_confirm, save_subs=save_subs)
 
 # Function to get show information from playback catalogue
 def get_playback_data(video_id, access_token):
@@ -965,7 +965,7 @@ def build_filename(playback_data, video_height):
     return f"{series_title}.S{season_number}E{episode_number}.{title}.{resolution_tag}.SBS.WEB-DL.AAC2.0.H.264"
 
 # Function to extract and print m3u8 URL
-def extract_info(video_url, access_token):
+def extract_info(video_url, access_token, include_subtitles=False):
     video_id = extract_video_id(video_url)
     if not video_id:
         print(f"{bcolors.WARNING}{icons.ICON_WARNING} SBS series URLs need a flag.{bcolors.ENDC}")
@@ -983,12 +983,13 @@ def extract_info(video_url, access_token):
 
     video_height = get_max_height_m3u8(manifest_url)
     formatted_file_name = build_filename(playback_data, video_height)
-    subtitles = collect_subtitles(hls_provider)
+    subtitles = collect_subtitles(hls_provider) if include_subtitles else []
     return manifest_url, formatted_file_name, subtitles, playback_data
 
 # Function to format and display download command
-def build_download_command(manifest_url, formatted_file_name, downloads_path, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+def build_download_command(manifest_url, formatted_file_name, downloads_path, interactive=False, quality=None, save_subs=False):
+    subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     download_command = (
         f'N_m3u8DL-RE "{manifest_url}" '
         f'{selectors}'
@@ -1004,7 +1005,7 @@ def display_info(manifest_url, formatted_file_name, subtitles=None, metadata=Non
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
 
 # Function to format and display download command
-def display_download_command(manifest_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False, metadata=None, quality=None):
+def display_download_command(manifest_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False, metadata=None, quality=None, auto_confirm=False, save_subs=False):
     if mode == "info":
         display_info(manifest_url, formatted_file_name, subtitles, metadata)
         return
@@ -1016,38 +1017,40 @@ def display_download_command(manifest_url, formatted_file_name, downloads_path, 
         downloads_path,
         interactive=(mode == "interactive"),
         quality=quality,
+        save_subs=save_subs,
     )
 
     print(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{manifest_url}")
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
     print(mask_proxy_command(download_command))
-    print_external_subtitles(subtitles or [])
+    if save_subs:
+        print_external_subtitles(subtitles or [])
 
-    user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == "y":
+    if confirm_download("Do you wish to download? Y or N: ", auto_confirm=auto_confirm, auto_download=auto_download):
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
         result = subprocess.run(download_command, shell=True)
         if result.returncode == 0:
-            save_external_subtitles(subtitles or [], downloads_path, formatted_file_name)
+            if save_subs:
+                save_external_subtitles(subtitles or [], downloads_path, formatted_file_name)
             print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
     else:
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
 # Main function
-def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
+def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None, auto_confirm=False, save_subs=False):
     if mode == "list":
         list_show_episodes(video_url, export_list)
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, credentials, quality)
+        download_selected_episodes(video_url, download_selector, downloads_path, credentials, quality, auto_confirm, save_subs)
         return
 
     config = load_config()
     access_token = get_sbs_access_token(config, credentials)
 
-    manifest_url, formatted_file_name, subtitles, metadata = extract_info(video_url, access_token)
+    manifest_url, formatted_file_name, subtitles, metadata = extract_info(video_url, access_token, include_subtitles=(mode == "info" or save_subs))
     if not manifest_url:
         return
 
-    display_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, metadata, quality)
+    display_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, metadata, quality, auto_confirm, save_subs)

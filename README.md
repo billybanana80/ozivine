@@ -12,14 +12,20 @@
 
 ## Features
 
-- [x] Movies and TV series
-- [x] Automatic PSSH, manifest, and key retrieval
-- [x] Cookie support where required
-- [x] Login credential support where required
-- [x] Optional proxy support for Australian and New Zealand services
-- [x] Info and action modes for previewing or manually selecting available streams
-- [x] SBS, ABC iView, 7Plus, 9Now, 10, Brollie, Maori+, ThreeNow, and TVNZ list mode for viewing available show episodes before choosing a download
-- [x] Supported sites: ABC iView, 7Plus, 9Now, 10, Brollie, SBS On Demand, Maori+, ThreeNow, and TVNZ
+- Movies, single episodes, and TV series where supported by the service.
+- Automatic manifest, PSSH, licence, and key handling where needed.
+- Widevine support where required.
+- Cookie, credential, and OTP login support where required by the service.
+- Optional proxy support using Surfshark or NordVPN-style HTTPS proxy endpoints for Australian and New Zealand services.
+- Shared list/export/download-selector behaviour across supported services.
+- Batch import mode using exported episode URL text files.
+- Optional quality selection with `-q/--quality` for single episode, selector-based, and batch downloads.
+- Optional `-s/--subs` mode to keep manifest subtitles or save external subtitle sidecars where implemented.
+- Optional `-y/--yes` mode and `download.auto_confirm` setting for unattended download prompts.
+- Info and action modes for previewing streams or manually selecting available streams.
+- GitHub release update checks on startup.
+- Project-wide cache clearing for known token caches and temporary files.
+- Supported sites: ABC iView, 7Plus, 9Now, 10, Brollie, SBS On Demand, Maori+, ThreeNow, and TVNZ.
 
 ## Requirements
 
@@ -53,13 +59,15 @@ Sample config:
 downloads_path: "C:/Downloads/"
 wvd_device_path: "C:/Downloads/Ozivine/wvd/l3.wvd"
 cookies_path: "C:/Downloads/Ozivine/cookies/cookies.txt"
+update_checks: true
+
+download:
+  auto_confirm: false
 
 credentials:
   10play: username:password
   sbs: username:password
-
-tvnz:
-  local_storage: "D:/Downloads/CDM/local_storage.json"
+  tvnz: user@example.com:none
 
 proxy:
   enabled: false
@@ -103,6 +111,8 @@ proxy_providers:
 
 Ozivine can route requests and downloads through a configured proxy provider. This is useful when a service requires an Australian or New Zealand IP address, or when your direct IP has been temporarily rate limited.
 
+Surfshark VPN and NordVPN are supported out of the box. Other providers such as ExpressVPN, Windscribe, PIA, and similar services can also be added, provided they offer OpenVPN-style proxy server addresses and separate proxy/service credentials.
+
 Proxy routing is selected automatically from the input video URL:
 
 | Region | Services |
@@ -136,8 +146,8 @@ Provider selection works like this:
 2. If `proxy.enabled` is `true`, Ozivine checks the service flag under `proxy.services`.
 3. If the current service is set to `false`, Ozivine uses a direct connection for that service.
 4. If the current service is set to `true`, Ozivine tries providers in `provider_order`.
-5. Surfshark is used first if its username, password, and matching `AU` or `NZ` server URL are filled in.
-6. NordVPN is used if Surfshark is incomplete and NordVPN has complete details for the required region.
+5. Surfshark is used first by default if its username, password, and matching `AU` or `NZ` server URL are filled in.
+6. NordVPN is used next by default if Surfshark is incomplete and NordVPN has complete details for the required region. Additional providers can be added to `proxy_providers` and referenced from `provider_order`.
 7. If no complete provider is configured, Ozivine falls back to a direct connection.
 
 Example: use proxy for New Zealand services only:
@@ -215,7 +225,7 @@ Service notes:
 - ABC iView, 9Now, Brollie, ThreeNow and Maori+ can be used without an account.
 - 7Plus requires cookies from a logged-in free account.
 - 10 and SBS require login/account data.
-- TVNZ requires local storage token.
+- TVNZ requires an account email in `credentials.tvnz`. The password value is ignored, so `email@example.com:none` is fine.
 
 ## Usage
 
@@ -272,7 +282,11 @@ Ozivine has these modes and download options:
 | List | `--list` or `-l` | Lists available episodes for supported show URLs and temporarily saves episode metadata while rendering. |
 | Export | `--export` or `-x` | With list mode, exports episode labels and URLs to a text file in `export`. |
 | Download selector | `--download` or `-d` | With supported show URLs, downloads a selected episode, season, or range by selector. |
-| Quality | `--quality` or `-q` | With auto or download selector mode, selects a video height such as `720` and uses that height in the generated filename. |
+| Batch | `--batch` or `-b` | Imports episode URLs from all text files in `export` and downloads them as one queue. |
+| Quality | `--quality` or `-q` | With auto, download selector, or batch mode, selects a video height such as `720` and uses that height in the generated filename. |
+| Subtitles | `--subs` or `-s` | Keeps service subtitles where implemented. This may retain subtitle tracks in the downloaded file or save an external sidecar subtitle, depending on the service. |
+| Auto-confirm | `--yes` or `-y` | Automatically answers yes to download prompts for the current run. |
+| Clear cache | `--clear-cache` or `-c` | Clears known cached service tokens from `config.yaml` and removes files from `temp/`. |
 
 Examples:
 
@@ -287,6 +301,14 @@ python ozivine.py "https://www.tvnz.co.nz/tvseries/grand-designs-new-zealand" -d
 python ozivine.py "https://iview.abc.net.au/show/fisk" -d s01e03-s02e02
 python ozivine.py "https://www.tvnz.co.nz/tvepisode/border-patrol-s15-e11-border-patrol" -q 720
 python ozivine.py "https://www.tvnz.co.nz/tvseries/border-patrol" -d s15e01-s15e12 -q 720
+python ozivine.py "https://7plus.com.au/grace-of-monaco" -s
+python ozivine.py "https://10.com.au/everyday-gourmet/episodes/16/episode-45/tpv260818mjzya" -s
+python ozivine.py "https://iview.abc.net.au/show/fisk" -d s01 -y
+python ozivine.py -b
+python ozivine.py -b -y
+python ozivine.py -b -s
+python ozivine.py -b -q 720 -s -y
+python ozivine.py --clear-cache
 ```
 
 The same flags can be entered after the URL when using the interactive prompt.
@@ -297,42 +319,65 @@ Action mode is useful when you want to choose a lower resolution, alternate audi
 
 Quality mode is useful when you want Ozivine to build the download command with a specific video height, for example `--select-video res=720` instead of `--select-video best`. It is recommended to check available streams with `-i` first, because requesting a height that does not exist, such as `-q 540`, can leave N_m3u8DL-RE with no matching video stream selected. Info mode still shows the filename derived from the service metadata and available streams.
 
+Subtitle mode is opt-in. Without `-s`, Ozivine drops manifest subtitle tracks with `--drop-subtitle all` and does not save external subtitle sidecars. With `-s`, manifest-based services use `--select-subtitle all`, while external-subtitle services save the available subtitle sidecar after a successful download.
+
+| Service | Subtitle source | Normal download | With `-s` / `--subs` |
+| --- | --- | --- | --- |
+| ABC iView | External sidecar | No sidecar subtitle is saved | Saves external subtitle sidecar |
+| 7Plus | Manifest | Drops subtitle tracks | Keeps/muxes manifest subtitles |
+| 9Now | External sidecar | No sidecar subtitle is saved | Saves external subtitle sidecar |
+| 10 | External sidecar | No sidecar subtitle is saved | Saves external subtitle sidecar |
+| SBS On Demand | External sidecar | No sidecar subtitle is saved | Saves external subtitle sidecar |
+| Brollie | Manifest | Drops subtitle tracks | Keeps/muxes manifest subtitles |
+| Maori+ | Manifest | Drops subtitle tracks | Keeps/muxes manifest subtitles |
+| ThreeNow | Manifest | Drops subtitle tracks | Keeps/muxes manifest subtitles |
+| TVNZ | Manifest | Drops subtitle tracks | Keeps/muxes manifest subtitles |
+
+Auto-confirm mode is useful when you want Ozivine to run without the final `Y/N` prompt. Use `-y` for a single run, or set `download.auto_confirm: true` in `config.yaml` to make it the default. This also confirms download selector queues, so check the URL, selector, save path, proxy, and quality options carefully before enabling it globally.
+
+Update checks are enabled by default with `update_checks: true` in `config.yaml`. On startup, Ozivine checks the latest GitHub release for `billybanana80/ozivine` and prints a notice only when a newer version is available. It does not warn for unreleased master branch pushes.
+
 List mode is currently available for SBS, ABC iView, 7Plus, 9Now, 10, Brollie, Maori+, ThreeNow, and TVNZ. It accepts supported show URLs and prints a season tree with episode watch URLs.
 
 Export mode applies to all supported list-mode services. It writes a plain text file named like `tvnz_border-patrol_export_20260717_120033.txt`, `brollie_skippy_export_20260717_120033.txt`, `mplus_ahikaroa_export_20260717_120033.txt`, or `abc_fisk_export_20260717_120033.txt` into the `export` folder.
 
+Batch mode imports episode URLs from every `.txt` file in the `export` folder, removes duplicate URLs, shows the source file counts, and then downloads the imported URLs as one queue. Without `-y`, Ozivine asks once before starting the queue. With `-y`, it starts immediately. Batch mode can also be combined with `-s` to keep subtitles and `-q` to apply the same quality selector to every imported episode.
+
 Download selector mode is currently available for ABC iView, 7Plus, 9Now, 10, Brollie, SBS, Maori+, ThreeNow, and TVNZ. Selectors must use lowercase or uppercase season/episode formatting: `s01e01`, `s2026e01`, `s01`, or `s2026`. Episode ranges such as `s01e03-s02e02` and season ranges such as `s01-s03` are also supported. Whole-season and range selectors ask once before downloading the queued episodes. 9Now selector downloads ignore clip items and queue standard episodes only.
 
-## TVNZ Local Storage
+## Clear Cache
 
-TVNZ no longer uses a simple username/password flow for Ozivine. It uses browser local storage values, which need to be extracted once and then cached for future use.
+The clear-cache option is project-wide and does not require a service URL:
 
-It is recommended to use a separate TVNZ account for this script. Do not share the same TVNZ browser session with Ozivine, as the sessions cannot be shared between the two.
-
-To extract your local storage details:
-
-1. Open TVNZ in your browser.
-2. Press `F12` to open Developer Tools.
-3. Open the Console tab.
-4. Paste the following code and press Enter:
-
-```javascript
-Object.assign(document.createElement('a'), {
-  href: URL.createObjectURL(new Blob([JSON.stringify({
-    accessToken: localStorage.accessToken,
-    refreshToken: localStorage.refreshToken,
-    deviceref: localStorage.deviceref
-  }, null, 2)])),
-  download: 'local_storage.json'
-}).click();
+```powershell
+python ozivine.py --clear-cache
 ```
 
-This saves a file named `local_storage.json` to your browser downloads folder. Set the path in `config.yaml`:
+It removes:
+
+- known cached token entries from `config.yaml`, currently `sbs.cache`, `10play.cache`, `7plus.cache`, and `tvnz.cache`;
+- files and folders inside `temp/`.
+
+It does not remove:
+
+- service credentials;
+- browser cookies;
+- downloaded media;
+- exported episode lists;
+- Python `__pycache__` folders.
+
+Python `__pycache__` folders contain bytecode files automatically created by Python when modules are imported. They are safe to delete manually, but they are not Ozivine service caches and Python will recreate them as needed.
+
+## TVNZ OTP Login
+
+TVNZ uses an email OTP login flow. Set your TVNZ account email in `config.yaml`:
 
 ```yaml
-tvnz:
-  local_storage: "D:/Downloads/CDM/local_storage.json"
+credentials:
+  tvnz: user@example.com:none
 ```
+
+On the first playback request, Ozivine sends an OTP code to that email address and prompts you to enter it. The resulting tokens are cached under `tvnz.cache` in `config.yaml`; future runs reuse or refresh that cache automatically. If TVNZ auth gets stale, run `python ozivine.py --clear-cache` to remove the cached tokens and trigger a fresh OTP login next time.
 
 ## Disclaimer
 

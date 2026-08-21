@@ -1,7 +1,5 @@
-import argparse
 import html
 import re
-import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -14,6 +12,7 @@ import requests
 import urllib3
 import icons
 from colors import bcolors
+from download_confirm import confirm_download
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
 
@@ -796,8 +795,9 @@ def format_filename(metadata, resolution):
     return ".".join(part for part in parts if part and part != "Unknown")
 
 
-def build_download_command(playback, filename, mode="auto", quality=None):
-    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+def build_download_command(playback, filename, mode="auto", quality=None, save_subs=False):
+    subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -819,27 +819,23 @@ def print_playback_details(playback, command=None):
         print(mask_proxy_command(command))
 
 
-def maybe_download(command, auto_download=False):
-    if auto_download:
-        user_input = "y"
-    else:
-        user_input = input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == "y":
+def maybe_download(command, auto_download=False, auto_confirm=False):
+    if confirm_download("Do you wish to download? Y or N: ", auto_confirm=auto_confirm, auto_download=auto_download):
         subprocess.run(command, shell=True)
     else:
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url, mode="auto", auto_download=False, quality=None):
+def process_video(video_url, mode="auto", auto_download=False, quality=None, auto_confirm=False, save_subs=False):
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving playback info...{bcolors.ENDC}")
     resolved = resolve_playback(video_url)
 
     playback = resolved["playback"]
     filename = apply_quality_to_filename(resolved["filename"], quality)
-    command = build_download_command(playback, filename, mode=mode, quality=quality)
+    command = build_download_command(playback, filename, mode=mode, quality=quality, save_subs=save_subs)
     print_playback_details(playback, command)
-    maybe_download(command, auto_download=auto_download)
+    maybe_download(command, auto_download=auto_download, auto_confirm=auto_confirm)
 
 
 def info(video_url):
@@ -858,64 +854,20 @@ def info(video_url):
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{resolved['filename']}.mkv")
 
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_subs=False):
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
-    user_input = input("Do you wish to download these episodes? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download("Do you wish to download these episodes? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, 1):
         print()
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {bcolors.ENDC}{item['url']}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, auto_confirm=auto_confirm, save_subs=save_subs)
 
 
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Brollie downloader")
-    parser.add_argument("url", nargs="?", help="Brollie series, episode, or movie URL")
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("-i", "--info", action="store_true", help="Show episode metadata and available streams without downloading")
-    mode.add_argument("-a", "--action", action="store_true", help="Let N_m3u8DL-RE prompt for stream choices")
-    mode.add_argument("-l", "--list", action="store_true", help="List episodes for a Brollie series URL")
-    mode.add_argument("-d", "--download", metavar="SELECTOR", help="Download selected episodes, e.g. s01e01, s01, s01e01-s01e03")
-    parser.add_argument("-x", "--export", action="store_true", help="Export list-mode episode URLs to a text file")
-    parser.add_argument("-q", "--quality", help="Select video height for downloads, e.g. 720 or 1080")
-    return parser.parse_args(argv)
-
-
-def cli_main():
-    try:
-        args = parse_args()
-        if args.url:
-            video_url = canonical_url(args.url.strip())
-        else:
-            prompt_input = input(f"{bcolors.LIGHTBLUE}Enter the Brollie URL: {bcolors.ENDC}").strip()
-            args = parse_args(shlex.split(prompt_input))
-            if not args.url:
-                print(f"{icons.ICON_FAILURE} {bcolors.RED}No Brollie URL provided.{bcolors.ENDC}")
-                return
-            video_url = canonical_url(args.url.strip())
-
-        print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Brollie URL: {bcolors.ENDC}{video_url}")
-        mode = "auto"
-        if args.info:
-            mode = "info"
-        elif args.action:
-            mode = "interactive"
-        elif args.list:
-            mode = "list"
-        elif args.download:
-            mode = "download"
-
-        main(video_url, Path.cwd(), None, mode=mode, export_list=args.export, download_selector=args.download, quality=args.quality)
-    except Exception as exc:
-        print(f"{icons.ICON_FAILURE} {bcolors.RED}Error: {exc}{bcolors.ENDC}")
-        sys.exit(1)
-
-
-def main(video_url, downloads_path, wvd_device_path=None, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
+def main(video_url, downloads_path, wvd_device_path=None, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None, auto_confirm=False, save_subs=False):
     global SAVE_PATH
     SAVE_PATH = Path(downloads_path)
     video_url = canonical_url(video_url)
@@ -937,7 +889,7 @@ def main(video_url, downloads_path, wvd_device_path=None, mode="auto", export_li
             print(f"{icons.ICON_FAILURE} {bcolors.RED}Download selector mode requires a Brollie series URL, not an episode URL.{bcolors.ENDC}")
             return
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
-        download_selected_episodes(video_url, download_selector, quality)
+        download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_subs)
         return
 
     if mode == "info":
@@ -948,8 +900,4 @@ def main(video_url, downloads_path, wvd_device_path=None, mode="auto", export_li
         print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
         return
 
-    process_video(video_url, mode=mode, auto_download=auto_download, quality=quality)
-
-
-if __name__ == "__main__":
-    cli_main()
+    process_video(video_url, mode=mode, auto_download=auto_download, quality=quality, auto_confirm=auto_confirm, save_subs=save_subs)

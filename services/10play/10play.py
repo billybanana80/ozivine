@@ -16,6 +16,7 @@ from rich.rule import Rule
 from rich.text import Text
 from colors import bcolors
 import icons
+from download_confirm import confirm_download
 from filename_utils import safe_windows_filename
 from quality_utils import apply_quality_to_filename, normalize_quality, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
@@ -865,8 +866,9 @@ def display_info(m3u8_file_path, formatted_file_name, master_m3u8_url, original_
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
     cleanup_temp_m3u8(m3u8_file_path)
 
-def build_download_command(source, downloads_path, save_name, mode="auto", quality=None):
-    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+def build_download_command(source, downloads_path, save_name, mode="auto", quality=None, save_subs=False):
+    subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     download_command = (
         f'N_m3u8DL-RE "{source}" '
         f'--ad-keyword redirector.googlevideo.com '
@@ -882,25 +884,26 @@ def display_master_info(master_m3u8_url, formatted_file_name, subtitles=None, me
     print_info_metadata(metadata or {})
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_file_name}.mkv")
 
-def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False, quality=None):
+def display_master_download_command(master_m3u8_url, formatted_file_name, downloads_path, mode="auto", subtitles=None, auto_download=False, quality=None, auto_confirm=False, save_subs=False):
     print(f"{bcolors.LIGHTBLUE}MASTER M3U8 URL: {bcolors.ENDC}{master_m3u8_url}")
     formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
-    download_command = build_download_command(master_m3u8_url, downloads_path, formatted_file_name, mode, quality)
+    download_command = build_download_command(master_m3u8_url, downloads_path, formatted_file_name, mode, quality, save_subs)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
-    print_external_subtitles(subtitles or [])
+    if save_subs:
+        print_external_subtitles(subtitles or [])
 
-    user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == 'y':
+    if confirm_download("Do you wish to download? Y or N: ", auto_confirm=auto_confirm, auto_download=auto_download):
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
         result = subprocess.run(download_command, shell=True)
         if result.returncode == 0:
-            save_external_subtitles(subtitles or [], downloads_path, formatted_file_name)
+            if save_subs:
+                save_external_subtitles(subtitles or [], downloads_path, formatted_file_name)
             print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
     else:
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
-def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto", subtitles=None, auto_download=False, quality=None):
+def display_download_command(m3u8_file_path, formatted_file_name, downloads_path, master_m3u8_url, mode="auto", subtitles=None, auto_download=False, quality=None, auto_confirm=False, save_subs=False):
     use_source = m3u8_file_path   # default to local file
     final_save_name = apply_quality_to_filename(formatted_file_name, quality)
     action_master_path = None
@@ -930,16 +933,17 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
             print(f"{bcolors.FAIL}Could not pick an alternate stream from the master playlist.{bcolors.ENDC}")
 
     # Build command
-    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best --select-subtitle all "
-    download_command = build_download_command(use_source, downloads_path, final_save_name, mode, quality)
+    subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best {subtitle_selector} "
+    download_command = build_download_command(use_source, downloads_path, final_save_name, mode, quality, save_subs)
     download_command = append_downloader_proxy(download_command)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
-    print_external_subtitles(subtitles or [])
+    if save_subs:
+        print_external_subtitles(subtitles or [])
 
     download_ok = False
-    user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == 'y':
+    if confirm_download("Do you wish to download? Y or N: ", auto_confirm=auto_confirm, auto_download=auto_download):
         # First attempt
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
         result = subprocess.run(download_command, shell=True)
@@ -947,7 +951,8 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
         if result.returncode != 0 and not preflight_failed:
             if expected_output_exists(downloads_path, final_save_name):
                 print(f"{bcolors.WARNING}Downloader returned an error after output was created; skipping fallback.{bcolors.ENDC}")
-                save_external_subtitles(subtitles or [], downloads_path, final_save_name)
+                if save_subs:
+                    save_external_subtitles(subtitles or [], downloads_path, final_save_name)
                 cleanup_temp_m3u8(action_master_path, m3u8_file_path)
                 print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Download complete{bcolors.ENDC}")
                 return
@@ -973,7 +978,8 @@ def display_download_command(m3u8_file_path, formatted_file_name, downloads_path
             else:
                 print(f"{bcolors.FAIL}Could not pick an alternate stream from the master playlist.{bcolors.ENDC}")
         if download_ok:
-            save_external_subtitles(subtitles or [], downloads_path, final_save_name)
+            if save_subs:
+                save_external_subtitles(subtitles or [], downloads_path, final_save_name)
     else:
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
 
@@ -1478,7 +1484,7 @@ def print_download_queue(episodes):
             )
         )
 
-def download_selected_episodes(series_url, selector, downloads_path, credentials, quality=None):
+def download_selected_episodes(series_url, selector, downloads_path, credentials, quality=None, auto_confirm=False, save_subs=False):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector)
@@ -1487,23 +1493,22 @@ def download_selected_episodes(series_url, selector, downloads_path, credentials
         return
     print_download_queue(episodes)
 
-    user_input = input(f"\nDownload {len(episodes)} episode(s)? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"\nDownload {len(episodes)} episode(s)? Y or N: ", auto_confirm=auto_confirm):
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
         return
 
     for index, episode in enumerate(episodes, start=1):
         print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {episode.get('Title') or episode.get('Video URL')}{bcolors.ENDC}")
-        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
+        main(episode["Video URL"], downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality, auto_confirm=auto_confirm, save_subs=save_subs)
 
 # Main logic
-def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
+def main(video_url, downloads_path, credentials, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None, auto_confirm=False, save_subs=False):
     if mode == "list":
         list_show_episodes(video_url, export_list)
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, credentials, quality)
+        download_selected_episodes(video_url, download_selector, downloads_path, credentials, quality, auto_confirm, save_subs)
         return
 
     config = load_config()
@@ -1531,7 +1536,7 @@ def main(video_url, downloads_path, credentials, mode="auto", export_list=False,
         manifest_url, video_data = extract_video_details(video_id, token, video_url)
         if manifest_url and video_data:
             formatted_file_name = format_file_name(video_data)
-            subtitles = collect_external_subtitles(manifest_url)
+            subtitles = collect_external_subtitles(manifest_url) if mode == "info" or save_subs else []
 
             if is_movie(video_data):
                 best_url, best_h = pick_best_variant(manifest_url)
@@ -1541,12 +1546,12 @@ def main(video_url, downloads_path, credentials, mode="auto", export_list=False,
                 if mode == "info":
                     display_master_info(manifest_url, formatted_file_name, subtitles, video_data)
                 else:
-                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, quality)
+                    display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, quality, auto_confirm, save_subs)
                 return
 
             requested_quality = normalize_quality(quality)
             if requested_quality and requested_quality != "1080" and mode != "info":
-                display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, quality)
+                display_master_download_command(manifest_url, formatted_file_name, downloads_path, mode, subtitles, auto_download, quality, auto_confirm, save_subs)
                 return
 
             variant_url = download_and_select_variant(manifest_url)
@@ -1559,7 +1564,7 @@ def main(video_url, downloads_path, credentials, mode="auto", export_list=False,
                     if mode == "info":
                         display_info(local_m3u8_file, formatted_file_name, manifest_url, original_variant_url, subtitles, video_data)
                     else:
-                        display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url, mode, subtitles, auto_download)
+                        display_download_command(local_m3u8_file, formatted_file_name, downloads_path, manifest_url, mode, subtitles, auto_download, quality, auto_confirm, save_subs)
                 else:
                     print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Failed to modify and save the variant M3U8{bcolors.ENDC}")
             else:

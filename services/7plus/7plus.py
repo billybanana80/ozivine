@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.rule import Rule
 from rich.text import Text
 from colors import bcolors
+from download_confirm import confirm_download
 from filename_utils import safe_windows_filename
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
@@ -760,7 +761,7 @@ def print_download_queue(episodes):
             )
         )
 
-def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, cookies_path, quality=None):
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, cookies_path, quality=None, auto_confirm=False, save_subs=False):
     if is_7plus_episode_url(series_url):
         print_show_url_required(series_url, selector)
         return
@@ -773,14 +774,13 @@ def download_selected_episodes(series_url, selector, downloads_path, wvd_device_
         return
     print_download_queue(episodes)
 
-    user_input = input(f"\nDownload {len(episodes)} episode(s)? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"\nDownload {len(episodes)} episode(s)? Y or N: ", auto_confirm=auto_confirm):
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
         return
 
     for index, episode in enumerate(episodes, start=1):
         print(f"\n{bcolors.LIGHTBLUE}{icons.ICON_INFO} Downloading {index}/{len(episodes)}: {episode.get('Title') or episode.get('Video URL')}{bcolors.ENDC}")
-        main(episode["Video URL"], downloads_path, wvd_device_path, cookies_path, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
+        main(episode["Video URL"], downloads_path, wvd_device_path, cookies_path, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality, auto_confirm=auto_confirm, save_subs=save_subs)
 
 def get_authenticated_session(video_url, cookies_path):
     """
@@ -1080,6 +1080,12 @@ def get_mpd_streams(mpd_url):
             })
     return sorted(streams, key=lambda item: (item["type"] != "video", -item["bandwidth"]))
 
+def parse_attribute_list(value):
+    return {
+        match.group(1): match.group(2).strip().strip('"')
+        for match in re.finditer(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', value)
+    }
+
 def get_m3u8_streams(m3u8_url):
     streams = []
     response = requests.get(m3u8_url)
@@ -1104,7 +1110,19 @@ def get_m3u8_streams(m3u8_url):
         elif pending and line and not line.startswith("#"):
             streams.append(pending)
             pending = None
-    return sorted(streams, key=lambda item: item["bandwidth"], reverse=True)
+        elif line.startswith("#EXT-X-MEDIA:"):
+            attrs = parse_attribute_list(line.split(":", 1)[1])
+            if (attrs.get("TYPE") or "").upper() != "SUBTITLES":
+                continue
+            language = attrs.get("LANGUAGE") or attrs.get("NAME") or attrs.get("GROUP-ID") or ""
+            streams.append({
+                "type": "subtitle",
+                "resolution": "",
+                "bandwidth": 0,
+                "codecs": "webvtt" if attrs.get("URI") else "",
+                "language": language,
+            })
+    return sorted(streams, key=lambda item: (item["type"] != "video", item["type"] != "audio", -item["bandwidth"], item.get("language") or ""))
 
 def print_streams(streams):
     if not streams:
@@ -1136,8 +1154,9 @@ def print_streams(streams):
         language = stream.get("language") or "-"
         _PRINT(f"  {idx:>2}  {label:<4} {resolution:<10} {bitrate:<16} {codecs:<18} {language:<5}")
 
-def build_7plus_command(url, downloads_path, formatted_file_name, keys=None, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+def build_7plus_command(url, downloads_path, formatted_file_name, keys=None, interactive=False, quality=None, save_subs=False):
+    subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     download_command = (
         f'N_m3u8DL-RE "{url}" '
         f'{selectors}'
@@ -1269,7 +1288,7 @@ def fetch_show_metadata(show_name, episode_id, session=None, auth_token=None):
     return response.json()
 
 # Function to format and display download command
-def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode="auto", auto_download=False, metadata=None, quality=None):
+def get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode="auto", auto_download=False, metadata=None, quality=None, auto_confirm=False, save_subs=False):
     formats = info.get('formats')
     if not formats:
         print(f"{bcolors.FAIL}No formats found in info{bcolors.ENDC}")
@@ -1297,7 +1316,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
                 print_7plus_info(url, "mpd", formatted_file_name, lic_url, pssh, keys, metadata)
                 return
             formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
-            download_command = build_7plus_command(url, downloads_path, formatted_file_name, keys, interactive=(mode == "interactive"), quality=quality)
+            download_command = build_7plus_command(url, downloads_path, formatted_file_name, keys, interactive=(mode == "interactive"), quality=quality, save_subs=save_subs)
         
         # -- VISIBLE OUTPUT (encrypted MPD) -----------------------------------
         _PRINT(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{url}")
@@ -1309,8 +1328,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
         _PRINT(mask_proxy_command(download_command))
         # ---------------------------------------------------------------------
         
-        user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
-        if user_input == 'y':
+        if confirm_download("Do you wish to download? Y or N: ", auto_confirm=auto_confirm, auto_download=auto_download):
             _PRINT(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
             result = subprocess.run(download_command, shell=True)
             if result.returncode == 0:
@@ -1330,7 +1348,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
                 print_7plus_info(url, "m3u8", formatted_file_name, metadata=metadata)
                 return
             formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
-            download_command = build_7plus_command(url, downloads_path, formatted_file_name, interactive=(mode == "interactive"), quality=quality)
+            download_command = build_7plus_command(url, downloads_path, formatted_file_name, interactive=(mode == "interactive"), quality=quality, save_subs=save_subs)
             
             # -- VISIBLE OUTPUT (unencrypted m3u8) -----------------------------
             _PRINT(f"{bcolors.LIGHTBLUE}M3U8 URL: {bcolors.ENDC}{url}")
@@ -1338,8 +1356,7 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             _PRINT(mask_proxy_command(download_command))
             # ------------------------------------------------------------------
             
-            user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
-            if user_input == 'y':
+            if confirm_download("Do you wish to download? Y or N: ", auto_confirm=auto_confirm, auto_download=auto_download):
                 _PRINT(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
                 result = subprocess.run(download_command, shell=True)
                 if result.returncode == 0:
@@ -1350,13 +1367,13 @@ def get_download_command(info, show_title, season_episode_tag, downloads_path, w
             print(f"{bcolors.FAIL}Failed to retrieve necessary information for download{bcolors.ENDC}")       
 
 # Main logic
-def main(video_url, downloads_path, wvd_device_path, cookies_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None): 
+def main(video_url, downloads_path, wvd_device_path, cookies_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None, auto_confirm=False, save_subs=False): 
     if mode == "list":
         list_show_episodes(video_url, cookies_path, export_list)
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, cookies_path, quality)
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, cookies_path, quality, auto_confirm, save_subs)
         return
 
     try:
@@ -1390,5 +1407,5 @@ def main(video_url, downloads_path, wvd_device_path, cookies_path, mode="auto", 
         return
 
     season_episode_tag = "" if is_movie_metadata(show_response, episode_id) else season_episode_from_metadata(alt_tag, episode_id)
-    get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode, auto_download, show_response, quality)
+    get_download_command(info, show_title, season_episode_tag, downloads_path, wvd_device_path, mode, auto_download, show_response, quality, auto_confirm, save_subs)
     return

@@ -3,15 +3,12 @@ import binascii
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
-import sys
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
@@ -26,6 +23,7 @@ from rich.text import Text
 
 from colors import bcolors
 import icons
+from download_confirm import confirm_download
 from filename_utils import safe_windows_filename
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, mask_proxy_command
@@ -1095,8 +1093,9 @@ def format_filename(metadata, resolution):
     return ".".join(part for part in parts if part and part != "Unknown")
 
 
-def build_download_command(playback, filename, keys=None, mode="auto", quality=None):
-    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+def build_download_command(playback, filename, keys=None, mode="auto", quality=None, save_subs=False):
+    subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+    selectors = "" if mode == "interactive" else f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -1145,21 +1144,15 @@ def print_mplus_info(playback, filename, keys=None):
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{filename}.mkv")
 
 
-def maybe_download(command, auto_download=False):
-    if auto_download:
+def maybe_download(command, auto_download=False, auto_confirm=False):
+    if confirm_download("Do you wish to download? Y or N: ", auto_confirm=auto_confirm, auto_download=auto_download):
         print(f"{icons.ICON_WAITING} {bcolors.OKBLUE}Downloading video...{bcolors.ENDC}")
         subprocess.run(command, shell=True)
         return
-
-    user_input = input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == "y":
-        print(f"{icons.ICON_WAITING} {bcolors.OKBLUE}Downloading video...{bcolors.ENDC}")
-        subprocess.run(command, shell=True)
-    else:
-        print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
+    print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url, mode="auto", auto_download=False, info=False, quality=None):
+def process_video(video_url, mode="auto", auto_download=False, info=False, quality=None, auto_confirm=False, save_subs=False):
     if not info:
         print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
     metadata = search_metadata(video_url)
@@ -1198,10 +1191,10 @@ def process_video(video_url, mode="auto", auto_download=False, info=False, quali
         return
 
     filename = apply_quality_to_filename(filename, quality)
-    command = build_download_command(playback, filename, keys, mode=mode, quality=quality)
+    command = build_download_command(playback, filename, keys, mode=mode, quality=quality, save_subs=save_subs)
     print_playback_details(playback, keys, command)
 
-    maybe_download(command, auto_download=auto_download)
+    maybe_download(command, auto_download=auto_download, auto_confirm=auto_confirm)
 
 
 def info(video_url):
@@ -1210,69 +1203,22 @@ def info(video_url):
     process_video(video_url, info=True)
 
 
-def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, quality=None):
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, quality=None, auto_confirm=False, save_subs=False):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
 
-    user_input = input(f"\nDownload {len(episode_items)} episode(s)? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"\nDownload {len(episode_items)} episode(s)? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        main(item.url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality)
+        main(item.url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=True, quality=quality, auto_confirm=auto_confirm, save_subs=save_subs)
 
 
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Resolve Maori+ episode/video or series URLs.",
-        usage=f"{Path(__file__).name} [url] [-i | -a | -l | -d SELECTOR]",
-    )
-    parser.add_argument("url", nargs="?", help="Maori+ episode/video or series URL")
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("-i", "--info", action="store_true", help="Show metadata and available streams without downloading")
-    mode_group.add_argument("-a", "--action", action="store_true", help="Let N_m3u8DL-RE prompt for stream choices")
-    mode_group.add_argument("-l", "--list", action="store_true", help="List episodes found on a series URL")
-    mode_group.add_argument("-d", "--download", metavar="SELECTOR", help="Download from a series URL using sXXeXX, sXX, or a range")
-    parser.add_argument("-x", "--export", action="store_true", help="Export list-mode episode URLs to a text file")
-    parser.add_argument("-q", "--quality", help="Select video height for downloads, e.g. 720 or 1080")
-    return parser.parse_args(argv)
-
-
-def standalone_main():
-    try:
-        args = parse_args()
-        if args.url:
-            video_url = args.url.strip()
-        else:
-            prompt_input = input(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Enter the Maori+ URL: {bcolors.ENDC}").strip()
-            args = parse_args(shlex.split(prompt_input))
-            video_url = (args.url or "").strip()
-            if not video_url:
-                print(f"{icons.ICON_FAILURE} {bcolors.FAIL}No Maori+ URL provided.{bcolors.ENDC}")
-                return 1
-
-        mode = "auto"
-        if args.info:
-            mode = "info"
-        elif args.action:
-            mode = "interactive"
-        elif args.list:
-            mode = "list"
-        elif args.download:
-            mode = "download"
-
-        main(video_url, os.getcwd(), None, mode=mode, export_list=args.export, download_selector=args.download, quality=args.quality)
-        return 0
-    except Exception as exc:
-        print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Error: {exc}{bcolors.ENDC}")
-        return 1
-
-
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None, auto_confirm=False, save_subs=False):
     global DOWNLOAD_DIR, WVD_DEVICE_PATH
     DOWNLOAD_DIR = downloads_path
     WVD_DEVICE_PATH = wvd_device_path
@@ -1288,7 +1234,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
         if is_episode_url(video_url):
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a Maori+ series URL, not an episode/movie URL.{bcolors.ENDC}")
             return
-        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, quality)
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, quality, auto_confirm, save_subs)
         return
 
     if mode == "info":
@@ -1296,11 +1242,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
         return
 
     if is_episode_url(video_url):
-        process_video(video_url, mode=mode, auto_download=auto_download, quality=quality)
+        process_video(video_url, mode=mode, auto_download=auto_download, quality=quality, auto_confirm=auto_confirm, save_subs=save_subs)
         return
 
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
-
-
-if __name__ == "__main__":
-    raise SystemExit(standalone_main())

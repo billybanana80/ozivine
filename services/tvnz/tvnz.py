@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
@@ -20,6 +21,7 @@ from rich.text import Text
 from colors import bcolors
 import icons
 from filename_utils import safe_windows_filename
+from download_confirm import confirm_download
 from quality_utils import apply_quality_to_filename, video_selector
 
 from services.proxy import append_downloader_proxy, mask_proxy_command
@@ -31,16 +33,22 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DOWNLOAD_DIR = None
 WVD_DEVICE_PATH = None
-LOCAL_STORAGE_PATH = None
+TVNZ_CREDENTIAL = None
+CONFIG_PATH = None
 TEMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "temp"))
 EXPORT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "export"))
 console = Console()
 
 USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/147.0.0.0 Safari/537.36"
+    "Dalvik/2.1.0 (Linux; U; Android 11; Android TV Build/RTMA.250416.082)"
 )
+
+TVNZ_HEADERS = {
+    "x-device-type": "androidtv",
+    "x-app-store-type": "androidtv",
+    "x-client-id": "tvnz-tvnz-androidtv",
+    "user-agent": USER_AGENT,
+}
 
 ENDPOINTS = {
     "authorize": "https://watch-cdn.edge-api.tvnz.co.nz/media/content/authorize",
@@ -54,9 +62,9 @@ ENDPOINTS = {
     "oauth": "https://watch-cdn.edge-api.tvnz.co.nz/oauth2/token",
 }
 
-WEB_CLIENT = {
-    "client_id": "webclient-ui-app",
-    "client_secret": "f99d00b8-5b20-4c27-983d-d2895f3e9fec",
+ANDROIDTV_CLIENT = {
+    "client_id": "android-ui-app",
+    "client_secret": "dcb2b779-1cf8-4672-81ed-8ee1a8345389",
 }
 
 CONTACT = {
@@ -152,7 +160,7 @@ class TVNZAPI:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": USER_AGENT,
+            **TVNZ_HEADERS,
             "Origin": "https://tvnz.co.nz",
             "Referer": "https://tvnz.co.nz/",
         })
@@ -160,6 +168,7 @@ class TVNZAPI:
         self.access_token = None
         self.refresh_token = None
         self.device_ref = None
+        self.email = None
         self.contact_id = None
         self.xauthorization = None
         self.oauth_token = None
@@ -169,107 +178,159 @@ class TVNZAPI:
     # Auth
     # ------------------------------------------------------------------
 
-    def load_local_storage(self):
-        path = LOCAL_STORAGE_PATH
-        if not path:
-            raise ValueError('Missing config value: tvnz.local_storage')
+    def get_config_email(self):
+        credential = TVNZ_CREDENTIAL
+        if isinstance(credential, dict):
+            credential = credential.get("default")
+        if isinstance(credential, list):
+            credential = credential[0] if credential else None
 
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"TVNZ local storage file not found: {path}")
+        email = str(credential or "").split(":", 1)[0].strip()
+        if not email:
+            raise ValueError("Missing config value: credentials.tvnz")
+        if "@" not in email:
+            raise ValueError("TVNZ credential must contain an email address")
+        return email
 
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+    def read_config(self):
+        if not CONFIG_PATH:
+            return {}
+        if not os.path.exists(CONFIG_PATH):
+            return {}
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
 
-        # Normal expected format:
-        # { "accessToken": "...", "refreshToken": "...", "deviceref": "..." }
-        data = raw
+    def write_config(self, config):
+        if not CONFIG_PATH:
+            return
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
 
-        # Fallback for some browser/local-storage exporters:
-        # [ {"key": "accessToken", "value": "..."}, ... ]
-        if isinstance(raw, list):
-            data = {}
-            for item in raw:
-                if not isinstance(item, dict):
-                    continue
-                key = item.get("key") or item.get("name")
-                value = item.get("value")
-                if key:
-                    data[key] = value
+    def load_cached_tokens(self):
+        config = self.read_config()
+        cache = config.get("tvnz", {}).get("cache")
+        if not isinstance(cache, dict):
+            return None
+        if cache.get("email") != self.email:
+            return None
+        required = ("accessToken", "refreshToken", "deviceID")
+        if any(not cache.get(key) for key in required):
+            return None
+        return cache
 
-        self.access_token = data.get("accessToken")
-        self.refresh_token = data.get("refreshToken")
-        self.device_ref = data.get("deviceref")
+    def save_cached_tokens(self, tokens):
+        config = self.read_config()
+        tvnz_config = config.setdefault("tvnz", {})
+        tvnz_config["cache"] = tokens
+        self.write_config(config)
 
-        missing = [
-            name for name, value in {
-                "accessToken": self.access_token,
-                "refreshToken": self.refresh_token,
-                "deviceref": self.device_ref,
-            }.items()
-            if not value
-        ]
-
-        if missing:
-            raise ValueError(f"Missing required local storage field(s): {', '.join(missing)}")
-
-        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Loaded TVNZ local storage tokens{bcolors.ENDC}")
-
-    def refresh_user_tokens_if_needed(self):
-        """
-        Uses refreshToken if accessToken has expired.
-        Writes refreshed values back into the same local_storage JSON if possible.
-        """
+    def access_token_is_current(self, access_token):
         try:
-            decoded = jwt.decode(self.access_token, options={"verify_signature": False})
+            decoded = jwt.decode(access_token, options={"verify_signature": False})
             exp = int(decoded.get("exp", 0))
         except Exception:
-            exp = 0
+            return False
+        return exp > int(time.time()) + 120
 
-        if exp > int(time.time()) + 120:
-            return
-
-        print(f"{bcolors.YELLOW}{icons.ICON_INFO} Access token expired or close to expiry. Refreshing...{bcolors.ENDC}")
-
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "content-type": "application/json",
-            "origin": "https://tvnz.co.nz",
-            "user-agent": USER_AGENT,
+    def create_otp(self):
+        payload = {
+            "CreateOTPRequestMessage": {
+                **CONTACT,
+                "email": self.email,
+            }
         }
+        r = self.session.post("https://rest-prod-tvnz.evergentpd.com/tvnz/createOTP", json=payload, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        msg = data.get("CreateOTPResponseMessage", {})
+        if not msg.get("isUserExist", False):
+            raise ValueError(f"TVNZ user not found for email: {self.email}")
+        if msg.get("status", "").lower() != "success":
+            raise ConnectionError(f"Failed to create TVNZ OTP: {data}")
 
+    def confirm_otp(self, otp, device_id):
+        payload = {
+            "ConfirmOTPRequestMessage": {
+                **CONTACT,
+                "email": self.email,
+                "canCreateAccount": True,
+                "checkDeviceLimit": True,
+                "dmaId": "001",
+                "otp": otp,
+                "isGenerateJWT": True,
+                "isPrivacyPoliciesAccepted": True,
+                "isTAndCAccepted": True,
+                "deviceDetails": {
+                    "deviceType": "Android TV",
+                    "deviceName": "androidtv",
+                    "modelNo": "Android TV",
+                    "appType": "Android",
+                    "serialNo": device_id,
+                },
+            }
+        }
+        r = self.session.post("https://rest-prod-tvnz.evergentpd.com/tvnz/confirmOTP", json=payload, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        msg = data.get("ConfirmOTPResponseMessage", {})
+        if msg.get("status", "").lower() != "success":
+            raise ConnectionError(f"Failed to confirm TVNZ OTP: {data}")
+        return msg
+
+    def refresh_user_tokens(self, tokens):
         payload = {
             "RefreshTokenRequestMessage": {
                 **CONTACT,
-                "refreshToken": self.refresh_token,
+                "refreshToken": tokens.get("refreshToken"),
             }
         }
-
-        r = self.session.post(ENDPOINTS["refresh"], headers=headers, json=payload, timeout=30)
+        r = self.session.post(ENDPOINTS["refresh"], json=payload, timeout=30)
         r.raise_for_status()
         data = r.json()
-
         msg = data.get("RefreshTokenResponseMessage", {})
         if msg.get("message", "").lower() != "success":
             raise ConnectionError(f"Failed to refresh TVNZ user tokens: {data}")
 
-        self.access_token = msg["accessToken"]
-        self.refresh_token = msg["refreshToken"]
+        refreshed = tokens.copy()
+        refreshed.update(msg)
+        refreshed["email"] = self.email
+        self.save_cached_tokens(refreshed)
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Refreshed TVNZ cached user tokens{bcolors.ENDC}")
+        return refreshed
 
-        # Best-effort writeback for dict-style local_storage.json
-        path = LOCAL_STORAGE_PATH
+    def create_user_tokens(self):
+        print(f"{bcolors.YELLOW}{icons.ICON_INFO} No TVNZ cached user tokens found. Sending OTP...{bcolors.ENDC}")
+        self.create_otp()
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} OTP code sent to {self.email}{bcolors.ENDC}")
+        otp = input("Enter TVNZ OTP code: ").strip().replace(" ", "")
+        if not otp:
+            raise ValueError("OTP code not provided")
+
+        device_id = str(uuid.uuid4())
+        confirmation = self.confirm_otp(otp, device_id)
+        params = confirmation.get("params") or []
+        tokens = {p.get("paramName"): p.get("paramValue") for p in params if p.get("paramName")}
+        tokens["contactID"] = confirmation.get("contactID")
+        tokens["deviceID"] = device_id
+        tokens["email"] = self.email
+        self.save_cached_tokens(tokens)
+        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} TVNZ user tokens cached{bcolors.ENDC}")
+        return tokens
+
+    def load_or_create_user_tokens(self):
+        self.email = self.get_config_email()
+        tokens = self.load_cached_tokens()
+        if not tokens:
+            return self.create_user_tokens()
+        if self.access_token_is_current(tokens.get("accessToken")):
+            print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Loaded TVNZ cached user tokens{bcolors.ENDC}")
+            return tokens
+        print(f"{bcolors.YELLOW}{icons.ICON_INFO} TVNZ cached token expired or close to expiry. Refreshing...{bcolors.ENDC}")
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-
-            if isinstance(raw, dict):
-                raw["accessToken"] = self.access_token
-                raw["refreshToken"] = self.refresh_token
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(raw, f, indent=4)
-
-                print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Refreshed tokens written back to local storage JSON{bcolors.ENDC}")
-        except Exception as e:
-            print(f"{bcolors.YELLOW}{icons.ICON_WARNING} Token refreshed, but could not update local storage file: {e}{bcolors.ENDC}")
+            return self.refresh_user_tokens(tokens)
+        except Exception as error:
+            print(f"{bcolors.YELLOW}{icons.ICON_WARNING} TVNZ token refresh failed: {error}{bcolors.ENDC}")
+            return self.create_user_tokens()
 
     def get_contact_id(self):
         headers = {
@@ -337,7 +398,7 @@ class TVNZAPI:
         }
 
         payload = {
-            **WEB_CLIENT,
+            **ANDROIDTV_CLIENT,
             "grant_type": "client_credentials",
             "audience": "edge-service",
             "scope": "offline openid",
@@ -361,7 +422,6 @@ class TVNZAPI:
             "origin": "https://tvnz.co.nz",
             "user-agent": USER_AGENT,
             "x-authorization": self.xauthorization,
-            "x-client-id": "tvnz-tvnz-web",
         }
 
         r = self.session.post(
@@ -380,9 +440,16 @@ class TVNZAPI:
         #print(f"{bcolors.OKGREEN}{ICON_SUCCESS} App registered{bcolors.ENDC}")
 
     def authenticate(self):
-        self.load_local_storage()
-        self.refresh_user_tokens_if_needed()
-        self.get_contact_id()
+        tokens = self.load_or_create_user_tokens()
+        self.access_token = tokens.get("accessToken")
+        self.refresh_token = tokens.get("refreshToken")
+        self.device_ref = tokens.get("deviceID")
+        self.contact_id = tokens.get("contactID")
+
+        if not all((self.access_token, self.refresh_token, self.device_ref)):
+            raise ValueError("TVNZ cached token data is incomplete")
+        if not self.contact_id:
+            self.get_contact_id()
         self.get_entitlements()
         self.get_oauth_token()
         self.register_app()
@@ -434,39 +501,28 @@ class TVNZAPI:
             "origin": "https://tvnz.co.nz",
             "user-agent": USER_AGENT,
             "x-authorization": self.xauthorization,
-            "x-client-id": "tvnz-tvnz-web",
             "x-device-id": device_token,
-            "x-device-type": "web",
         }
 
         payload = {
-            "deviceName": "web",
+            "deviceName": "androidtv",
             "deviceId": self.device_ref,
+            "deviceManufacturer": "Android TV",
+            "deviceModelName": "Android TV",
+            "deviceOs": "Android",
+            "deviceOsVersion": "10",
             "contentId": video.get("nu"),
+            "mediaFormat": "dash",
             "contentTypeId": "vod",
             "catalogType": video.get("cty"),
-            "mediaFormat": "dash",
             "drm": "widevine",
             "delivery": "streaming",
+            "quality": "high",
             "disableSsai": "true",
-            "deviceManufacturer": "web",
-            "deviceModelName": "Chrome browser on Windows",
-            "deviceModelNumber": "Chrome",
-            "deviceOs": USER_AGENT,
+            "supportedResolution": "UHD",
             "supportedAudioCodecs": "mp4a",
             "supportedVideoCodecs": "avc,hevc,av01",
-            "supportedMaxWVSecurityLevel": "L3",
-            "deviceToken": device_token,
-            "urlParameters": {
-                "vpa": "click",
-                "rdid": self.device_ref,
-                "is_lat": "0",
-                "npa": "0",
-                "idtype": "dpid",
-                "endpoint": "web",
-                "endpoint-group": "desktop",
-                "endpoint_detail": "desktop",
-            },
+            "supportedMaxWVSecurityLevel": "L1",
         }
 
         r = self.session.post(ENDPOINTS["authorize"], headers=headers, json=payload, timeout=30)
@@ -736,8 +792,9 @@ def print_info_metadata(video):
     for label, value in rows:
         print(f"{bcolors.LIGHTBLUE}{label}: {bcolors.ENDC}{value}")
 
-def build_download_command(mpd_url, formatted_file_name, keys, mode="auto", quality=None):
-    selectors = "" if mode == "interactive" else f'{video_selector(quality)} --select-audio best -da role="Description" --select-subtitle all '
+def build_download_command(mpd_url, formatted_file_name, keys, mode="auto", quality=None, save_subs=False):
+    subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+    selectors = "" if mode == "interactive" else f'{video_selector(quality)} --select-audio best -da role="Description" {subtitle_selector} '
     download_command = (
         f'N_m3u8DL-RE "{mpd_url}" '
         f'{selectors}'
@@ -751,7 +808,7 @@ def build_download_command(mpd_url, formatted_file_name, keys, mode="auto", qual
 
     return append_downloader_proxy(download_command)
 
-def get_download_command(video_url, mode="auto", auto_download=False, quality=None):
+def get_download_command(video_url, mode="auto", auto_download=False, quality=None, auto_confirm=False, save_subs=False):
     api = TVNZAPI()
     api.authenticate()
 
@@ -781,13 +838,12 @@ def get_download_command(video_url, mode="auto", auto_download=False, quality=No
         return
 
     formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
-    download_command = build_download_command(mpd_url, formatted_file_name, keys, mode, quality)
+    download_command = build_download_command(mpd_url, formatted_file_name, keys, mode, quality, save_subs)
 
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND:{bcolors.ENDC}")
     print(mask_proxy_command(download_command))
 
-    user_input = "y" if auto_download else input("Do you wish to download? Y or N: ").strip().lower()
-    if user_input == "y":
+    if confirm_download("Do you wish to download? Y or N: ", auto_confirm=auto_confirm, auto_download=auto_download):
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_INFO} Download starting{bcolors.ENDC}")
         result = subprocess.run(download_command, shell=True)
         if result.returncode == 0:
@@ -1161,7 +1217,7 @@ def print_download_queue(episodes):
     for episode in episodes:
         print(f"{format_queue_label(episode)}")
 
-def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, local_storage_path, quality=None):
+def download_selected_episodes(series_url, selector, downloads_path, wvd_device_path, tvnz_credential, config_path, quality=None, auto_confirm=False, save_subs=False):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
     try:
         episodes = select_episodes(series_url, selector)
@@ -1170,8 +1226,7 @@ def download_selected_episodes(series_url, selector, downloads_path, wvd_device_
         return
     print_download_queue(episodes)
 
-    user_input = input(f"\nDownload {len(episodes)} episode(s)? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"\nDownload {len(episodes)} episode(s)? Y or N: ", auto_confirm=auto_confirm):
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download Cancelled{bcolors.ENDC}")
         return
 
@@ -1181,27 +1236,31 @@ def download_selected_episodes(series_url, selector, downloads_path, wvd_device_
             episode["Video URL"],
             downloads_path,
             wvd_device_path,
-            local_storage_path,
+            tvnz_credential,
+            config_path,
             mode="auto",
             export_list=False,
             download_selector=None,
             auto_download=True,
             quality=quality,
+            auto_confirm=auto_confirm,
+            save_subs=save_subs,
         )
 
-def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None):
-    global DOWNLOAD_DIR, WVD_DEVICE_PATH, LOCAL_STORAGE_PATH
+def main(video_url, downloads_path, wvd_device_path, tvnz_credential, config_path, mode="auto", export_list=False, download_selector=None, auto_download=False, quality=None, auto_confirm=False, save_subs=False):
+    global DOWNLOAD_DIR, WVD_DEVICE_PATH, TVNZ_CREDENTIAL, CONFIG_PATH
     
     DOWNLOAD_DIR = downloads_path
     WVD_DEVICE_PATH = wvd_device_path
-    LOCAL_STORAGE_PATH = local_storage_path
+    TVNZ_CREDENTIAL = tvnz_credential
+    CONFIG_PATH = config_path
 
     if mode == "list":
         list_show_episodes(video_url, export_list)
         return
 
     if mode == "download":
-        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, local_storage_path, quality)
+        download_selected_episodes(video_url, download_selector, downloads_path, wvd_device_path, tvnz_credential, config_path, quality, auto_confirm, save_subs)
         return
 
     if looks_like_tvnz_series_url(video_url):
@@ -1209,5 +1268,5 @@ def main(video_url, downloads_path, wvd_device_path, local_storage_path, mode="a
         print(f"{bcolors.YELLOW}{icons.ICON_INFO} Use -l to list episodes or -d with a selector to download from a series.{bcolors.ENDC}")
         return
 
-    get_download_command(video_url, mode, auto_download, quality)
+    get_download_command(video_url, mode, auto_download, quality, auto_confirm, save_subs)
 
